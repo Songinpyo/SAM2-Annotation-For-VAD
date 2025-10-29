@@ -40,10 +40,20 @@ class XDViolenceAdapter:
                 # Convert to intervals
                 intervals = self._merge_frames_to_intervals(frame_numbers)
 
-                videos.append({
-                    'name': video_name,
-                    'intervals': intervals
-                })
+                # Create separate video entry for each interval
+                if not intervals:
+                    continue
+
+                for idx, interval in enumerate(intervals):
+                    t0, t1 = interval
+                    display_name = f"{video_name} - Interval {idx + 1} [{t0}-{t1}s]"
+
+                    videos.append({
+                        'name': video_name,
+                        'display_name': display_name,
+                        'interval_idx': idx,
+                        'intervals': [interval]  # Single interval only
+                    })
 
         return videos
 

@@ -645,24 +645,30 @@ class MainWindow(QMainWindow):
         videos = self.current_adapter.get_videos()
         self.video_combo.addItem("-- Select Video --")
         for v in videos:
-            self.video_combo.addItem(v['name'])
+            # Use display_name if available, otherwise use name
+            display = v.get('display_name', v['name'])
+            self.video_combo.addItem(display)
 
-    def on_video_changed(self, video_name):
+    def on_video_changed(self, video_display_name):
         """Video selection changed"""
-        if not video_name or video_name.startswith("--"):
+        if not video_display_name or video_display_name.startswith("--"):
             return
 
         if not self.current_adapter:
             return
 
         videos = self.current_adapter.get_videos()
-        self.current_video = next((v for v in videos if v['name'] == video_name), None)
+        # Find video by display_name
+        self.current_video = next((v for v in videos if v.get('display_name', v['name']) == video_display_name), None)
 
         if not self.current_video:
             return
 
+        # Create unique video identifier including interval
+        video_id = f"{self.current_video['name']}_interval{self.current_video.get('interval_idx', 0)}"
+
         # Update annotation state
-        if self.ann_state.current_video != video_name:
+        if self.ann_state.current_video != video_id:
             self.ann_state.annotations.clear()
             self.ann_state.entity_notes.clear()
             self.ann_state.history.clear()
@@ -733,9 +739,12 @@ class MainWindow(QMainWindow):
 
         self.anchors = anchors
 
+        # Create unique video identifier including interval
+        video_id = f"{self.current_video['name']}_interval{self.current_video.get('interval_idx', 0)}"
+
         # Update annotation state
         self.ann_state.set_video(
-            self.current_video['name'],
+            video_id,
             anchors,
             dt,
             info['width'],
@@ -1041,16 +1050,19 @@ class MainWindow(QMainWindow):
     def on_import(self):
         """Import existing annotations"""
         run_name = self.run_name_input.text()
-        video_name = self.current_video['name'] if self.current_video else None
 
-        if not video_name:
+        if not self.current_video:
             QMessageBox.warning(self, "Warning", "Please select a video first")
             return
+
+        video_name = self.current_video['name']
+        interval_idx = self.current_video.get('interval_idx')
 
         import_path = get_annotation_path(
             self.config['export']['output_dir'],
             run_name,
-            video_name
+            video_name,
+            interval_idx
         )
 
         if not os.path.exists(import_path):
@@ -1090,11 +1102,13 @@ class MainWindow(QMainWindow):
         # Export
         run_name = self.run_name_input.text()
         video_name = self.current_video['name']
+        interval_idx = self.current_video.get('interval_idx')
 
         output_path = get_annotation_path(
             self.config['export']['output_dir'],
             run_name,
-            video_name
+            video_name,
+            interval_idx
         )
 
         try:
@@ -1108,8 +1122,11 @@ class MainWindow(QMainWindow):
             # Generate stats
             stats = generate_statistics(annotations)
 
+            # Get filename for display
+            filename = os.path.basename(output_path)
+
             # Show brief status message
-            self.show_status(f"Exported {stats['total_annotations']} annotations to {video_name}.txt ✓", 3000)
+            self.show_status(f"Exported {stats['total_annotations']} annotations to {filename} ✓", 3000)
 
             # Print stats to console for reference
             print(f"\n=== Export Success ===")
