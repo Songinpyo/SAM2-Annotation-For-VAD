@@ -1,0 +1,31 @@
+dataset:
+  ucf_crime:
+    annotation_file: "data/ucf-crime/annotations.txt"
+    videos_dir: "data/ucf-crime/videos"
+    original_fps: 30
+
+  xd_violence:
+    annotation_file: "data/xd-violence/annotations.txt"
+    videos_dir: "data/xd-violence/videos"
+    original_fps: 30
+    gap_threshold: 5
+
+eis:
+  dt_candidates: [10, 4, 2, 1]
+  min_K: 3
+  max_K: 15
+
+entity:
+  roles: ["actor", "subject", "related"]
+  max_ids_per_role: 10
+
+ui:
+  colors:
+    actor: "#FF0000"
+    subject: "#00FF00"
+    related: "#0000FF"
+    pos_point: "#00FFFF"
+    neg_point: "#FF00FF"
+
+export:
+  output_dir: "annotations"
