@@ -71,8 +71,13 @@ class UCFCrimeAdapter:
         """Get list of videos"""
         return self.videos
 
-    def expand_interval(self, t0, t1, dt):
+    def expand_interval(self, t0, t1, dt, video_duration=None):
         """Expand interval by dt on both sides"""
         t0_prime = max(0, t0 - dt)
         t1_prime = t1 + dt
+
+        # Clamp to video duration if provided
+        if video_duration is not None:
+            t1_prime = min(t1_prime, video_duration)
+
         return t0_prime, t1_prime

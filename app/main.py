@@ -702,6 +702,9 @@ class MainWindow(QMainWindow):
         self.video_loader = VideoLoader(video_path)
         info = self.video_loader.get_info()
 
+        # Calculate video duration in seconds
+        video_duration = int(info['frame_count'] / info['fps']) if info['fps'] > 0 else None
+
         # Generate anchors
         intervals = self.current_video['intervals']
         if not intervals:
@@ -722,8 +725,8 @@ class MainWindow(QMainWindow):
         else:
             dt = int(dt_mode[:-1])
 
-        # Expand interval
-        t0_prime, t1_prime = self.current_adapter.expand_interval(t0, t1, dt)
+        # Expand interval (clamped to video duration)
+        t0_prime, t1_prime = self.current_adapter.expand_interval(t0, t1, dt, video_duration)
 
         # Generate anchors
         anchors = generate_anchors(t0_prime, t1_prime, dt)
