@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from core.utils import load_config
 from core.dataset.ucf_crime import UCFCrimeAdapter
 from core.dataset.xd_violence import XDViolenceAdapter
+from core.dataset.view360 import VIEW360Adapter
 from core.eis.dt_select import select_dt_auto
 from core.eis.anchors import generate_anchors, subsample_anchors, pad_anchors
 from core.io.video import VideoLoader
@@ -310,7 +311,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Dataset:"))
         self.dataset_combo = QComboBox()
         self.dataset_combo.addItem("-- Select Dataset --")
-        self.dataset_combo.addItems(["ucf-crime", "xd-violence"])
+        self.dataset_combo.addItems(["ucf-crime", "xd-violence", "view360"])
         self.dataset_combo.currentTextChanged.connect(self.on_dataset_changed)
         layout.addWidget(self.dataset_combo)
 
@@ -638,6 +639,12 @@ class MainWindow(QMainWindow):
                 self.config['dataset']['xd_violence']['annotation_file'],
                 original_fps=self.config['dataset']['xd_violence']['original_fps'],
                 gap_threshold=self.config['dataset']['xd_violence']['gap_threshold']
+            )
+        elif dataset == "view360":
+            self.current_adapter = VIEW360Adapter(
+                self.config['dataset']['view360']['annotation_file'],
+                self.config['dataset']['view360']['videos_dir'],
+                original_fps=self.config['dataset']['view360']['original_fps']
             )
         else:
             return

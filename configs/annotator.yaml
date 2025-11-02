@@ -10,6 +10,11 @@ dataset:
     original_fps: 30
     gap_threshold: 5
 
+  view360:
+    annotation_file: "data/view360/annotations.txt"
+    videos_dir: "data/view360/videos"
+    original_fps: 30
+
 eis:
   dt_candidates: [10, 4, 2, 1]
   min_K: 3
