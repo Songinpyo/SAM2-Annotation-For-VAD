@@ -46,21 +46,37 @@ class VIEW360Adapter:
         videos = []
 
         for video_name, intervals in video_intervals.items():
-            # Find actual video file: pattern is {Location}_{video_name}_1fps.mp4
+            # Try multiple patterns to find video file
+            actual_video_name = None
+
+            # Pattern 1: {Location}_{video_name}_1fps.mp4
             video_pattern = os.path.join(self.videos_dir, f"*_{video_name}_1fps.mp4")
             matching_files = glob.glob(video_pattern)
+            if matching_files:
+                actual_video_name = os.path.basename(matching_files[0])
 
-            if not matching_files:
-                # Try without wildcard (in case pattern is different)
+            # Pattern 2: {video_name}_1fps.mp4
+            if not actual_video_name:
                 alt_path = os.path.join(self.videos_dir, f"{video_name}_1fps.mp4")
                 if os.path.exists(alt_path):
                     actual_video_name = f"{video_name}_1fps.mp4"
-                else:
-                    # Skip if video file not found
-                    continue
-            else:
-                # Use basename of first match
-                actual_video_name = os.path.basename(matching_files[0])
+
+            # Pattern 3: {Location}_{video_name}.mp4
+            if not actual_video_name:
+                video_pattern = os.path.join(self.videos_dir, f"*_{video_name}.mp4")
+                matching_files = glob.glob(video_pattern)
+                if matching_files:
+                    actual_video_name = os.path.basename(matching_files[0])
+
+            # Pattern 4: {video_name}.mp4
+            if not actual_video_name:
+                alt_path = os.path.join(self.videos_dir, f"{video_name}.mp4")
+                if os.path.exists(alt_path):
+                    actual_video_name = f"{video_name}.mp4"
+
+            # Skip if video file not found
+            if not actual_video_name:
+                continue
 
             # Create separate entry for each interval
             for idx, interval in enumerate(intervals):
