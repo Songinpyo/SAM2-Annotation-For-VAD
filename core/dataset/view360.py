@@ -25,22 +25,27 @@ class VIEW360Adapter:
 
                 video_name = parts[0]
 
-                try:
-                    start_frame = int(parts[1])
-                    end_frame = int(parts[2])
+                # Parse intervals (pairs: start end start end ...)
+                if video_name not in video_intervals:
+                    video_intervals[video_name] = []
 
-                    # Convert frame numbers to seconds
-                    start_sec = int(start_frame / self.original_fps)
-                    end_sec = int(end_frame / self.original_fps)
+                i = 1
+                while i + 1 < len(parts):
+                    try:
+                        start_frame = int(parts[i])
+                        end_frame = int(parts[i + 1])
 
-                    if video_name not in video_intervals:
-                        video_intervals[video_name] = []
+                        # Convert frame numbers to seconds
+                        start_sec = int(start_frame / self.original_fps)
+                        end_sec = int(end_frame / self.original_fps)
 
-                    video_intervals[video_name].append((start_sec, end_sec))
+                        video_intervals[video_name].append((start_sec, end_sec))
 
-                except (ValueError, IndexError):
-                    # Skip invalid entries
-                    continue
+                    except (ValueError, IndexError):
+                        # Skip invalid entries
+                        pass
+
+                    i += 2
 
         # Second pass: create video entries with intervals
         videos = []
