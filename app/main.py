@@ -18,6 +18,9 @@ from core.utils import load_config
 from core.dataset.ucf_crime import UCFCrimeAdapter
 from core.dataset.xd_violence import XDViolenceAdapter
 from core.dataset.view360 import VIEW360Adapter
+from core.dataset.ped import PedAdapter
+from core.dataset.dota import DOTAAdapter
+from core.dataset.shanghaitech import ShanghaiTechAdapter
 from core.eis.dt_select import select_dt_auto
 from core.eis.anchors import generate_anchors, subsample_anchors, pad_anchors
 from core.io.video import VideoLoader
@@ -311,7 +314,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Dataset:"))
         self.dataset_combo = QComboBox()
         self.dataset_combo.addItem("-- Select Dataset --")
-        self.dataset_combo.addItems(["ucf-crime", "xd-violence", "view360"])
+        self.dataset_combo.addItems(["ucf-crime", "xd-violence", "view360", "ped1", "ped2", "dota", "shanghaitech"])
         self.dataset_combo.currentTextChanged.connect(self.on_dataset_changed)
         layout.addWidget(self.dataset_combo)
 
@@ -645,6 +648,30 @@ class MainWindow(QMainWindow):
                 self.config['dataset']['view360']['annotation_file'],
                 self.config['dataset']['view360']['videos_dir'],
                 original_fps=self.config['dataset']['view360']['original_fps']
+            )
+        elif dataset == "ped1":
+            self.current_adapter = PedAdapter(
+                self.config['dataset']['ped1']['annotation_file'],
+                self.config['dataset']['ped1']['videos_dir'],
+                original_fps=self.config['dataset']['ped1']['original_fps']
+            )
+        elif dataset == "ped2":
+            self.current_adapter = PedAdapter(
+                self.config['dataset']['ped2']['annotation_file'],
+                self.config['dataset']['ped2']['videos_dir'],
+                original_fps=self.config['dataset']['ped2']['original_fps']
+            )
+        elif dataset == "dota":
+            self.current_adapter = DOTAAdapter(
+                self.config['dataset']['dota']['annotation_file'],
+                self.config['dataset']['dota']['videos_dir'],
+                original_fps=self.config['dataset']['dota']['original_fps']
+            )
+        elif dataset == "shanghaitech":
+            self.current_adapter = ShanghaiTechAdapter(
+                self.config['dataset']['shanghaitech']['annotation_file'],
+                self.config['dataset']['shanghaitech']['videos_dir'],
+                original_fps=self.config['dataset']['shanghaitech']['original_fps']
             )
         else:
             return

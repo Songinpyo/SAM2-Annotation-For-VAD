@@ -15,6 +15,36 @@ dataset:
     videos_dir: "data/view360/videos"
     original_fps: 30
 
+  ped1:
+    annotation_file: "data/ped1/annotations.txt"
+    videos_dir: "data/ped1/videos"
+    original_fps: 32
+
+  ped2:
+    annotation_file: "data/ped2/annotations.txt"
+    videos_dir: "data/ped2/videos"
+    original_fps: 32
+
+  dota:
+    annotation_file: "data/dota/annotations.txt"
+    videos_dir: "data/dota/videos"
+    original_fps: 16
+
+  shanghaitech:
+    annotation_file: "data/shanghaitech/annotations.txt"
+    videos_dir: "data/shanghaitech/videos"
+    original_fps: 24
+
+  ubnormal:
+    annotation_file: "data/ubnormal/annotations.txt"
+    videos_dir: "data/ubnormal/videos"
+    original_fps: 30
+
+  avenue:
+    annotation_file: "data/avenue/annotations.txt"
+    videos_dir: "data/avenue/videos"
+    original_fps: 32
+
 eis:
   dt_candidates: [10, 4, 2, 1]
   min_K: 3
