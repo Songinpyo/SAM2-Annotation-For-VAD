@@ -41,7 +41,7 @@ dataset:
     original_fps: 30
 
   avenue:
-    annotation_file: "data/avenue/annotations.txt"
+    annotation_file: "data/avenue/avenue_merge.txt"
     videos_dir: "data/avenue/videos"
     original_fps: 32
 

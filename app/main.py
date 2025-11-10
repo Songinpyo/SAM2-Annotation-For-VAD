@@ -21,6 +21,7 @@ from core.dataset.view360 import VIEW360Adapter
 from core.dataset.ped import PedAdapter
 from core.dataset.dota import DOTAAdapter
 from core.dataset.shanghaitech import ShanghaiTechAdapter
+from core.dataset.avenue import AvenueAdapter
 from core.eis.dt_select import select_dt_auto
 from core.eis.anchors import generate_anchors, subsample_anchors, pad_anchors
 from core.io.video import VideoLoader
@@ -314,7 +315,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Dataset:"))
         self.dataset_combo = QComboBox()
         self.dataset_combo.addItem("-- Select Dataset --")
-        self.dataset_combo.addItems(["ucf-crime", "xd-violence", "view360", "ped1", "ped2", "dota", "shanghaitech"])
+        self.dataset_combo.addItems(["ucf-crime", "xd-violence", "view360", "ped1", "ped2", "dota", "shanghaitech", "avenue"])
         self.dataset_combo.currentTextChanged.connect(self.on_dataset_changed)
         layout.addWidget(self.dataset_combo)
 
@@ -672,6 +673,12 @@ class MainWindow(QMainWindow):
                 self.config['dataset']['shanghaitech']['annotation_file'],
                 self.config['dataset']['shanghaitech']['videos_dir'],
                 original_fps=self.config['dataset']['shanghaitech']['original_fps']
+            )
+        elif dataset == "avenue":
+            self.current_adapter = AvenueAdapter(
+                self.config['dataset']['avenue']['annotation_file'],
+                self.config['dataset']['avenue']['videos_dir'],
+                original_fps=self.config['dataset']['avenue']['original_fps']
             )
         else:
             return
