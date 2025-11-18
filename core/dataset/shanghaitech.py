@@ -1,14 +1,14 @@
 import os
 
 class ShanghaiTechAdapter:
-    def __init__(self, annotation_file, videos_dir, original_fps=25):
+    def __init__(self, annotation_file, videos_dir):
+        """ShanghaiTech dataset adapter (frame-based)."""
         self.annotation_file = annotation_file
         self.videos_dir = videos_dir
-        self.original_fps = original_fps
         self.videos = self._parse_annotations()
 
     def _parse_annotations(self):
-        """Parse ShanghaiTech annotation file
+        """Parse ShanghaiTech annotation file (frame-based)
 
         Format: video_name total_frames anomaly_flag start_frame end_frame
         - anomaly_flag: 0 = normal (entire video), 1 = anomaly exists in [start, end]
@@ -42,24 +42,21 @@ class ShanghaiTechAdapter:
                 if not os.path.exists(video_path):
                     continue
 
-                # Convert frame numbers to seconds
-                start_sec = int(start_frame / self.original_fps)
-                end_sec = int(end_frame / self.original_fps)
-
+                # Use frame numbers directly (no FPS conversion!)
                 # Create video entry
                 if anomaly_flag == 0:
                     # Normal video - use entire duration
-                    display_name = f"{video_name} - Normal [{start_sec}-{end_sec}s]"
+                    display_name = f"{video_name} - Normal [Frame {start_frame}-{end_frame}]"
                 else:
                     # Anomaly video - use specified interval
-                    display_name = f"{video_name} - Anomaly [{start_sec}-{end_sec}s]"
+                    display_name = f"{video_name} - Anomaly [Frame {start_frame}-{end_frame}]"
 
                 videos.append({
                     'name': actual_video_name,  # Actual filename
                     'display_name': display_name,
                     'annotation_name': video_name,  # Original annotation name
                     'interval_idx': 0,
-                    'intervals': [(start_sec, end_sec)]
+                    'intervals': [(start_frame, end_frame)]
                 })
 
         return videos
@@ -68,13 +65,13 @@ class ShanghaiTechAdapter:
         """Get list of videos"""
         return self.videos
 
-    def expand_interval(self, t0, t1, dt, video_duration=None):
-        """Expand interval by dt on both sides"""
-        t0_prime = max(0, t0 - dt)
-        t1_prime = t1 + dt
+    def expand_interval(self, start_frame, end_frame, expand_frames, max_frame=None):
+        """Expand interval by expand_frames on both sides"""
+        start_expanded = max(0, start_frame - expand_frames)
+        end_expanded = end_frame + expand_frames
 
-        # Clamp to video duration if provided
-        if video_duration is not None:
-            t1_prime = min(t1_prime, video_duration)
+        # Clamp to video frame count if provided
+        if max_frame is not None:
+            end_expanded = min(end_expanded, max_frame)
 
-        return t0_prime, t1_prime
+        return start_expanded, end_expanded

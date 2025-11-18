@@ -24,10 +24,38 @@ class VideoLoader:
         }
 
     def seek_to_second(self, second):
-        """Seek to specific second and return frame (RGB)"""
+        """Seek to specific second and return frame (RGB) - DEPRECATED
+
+        Use seek_to_frame() for the new frame-based system.
+        """
         fps = self.cap.get(cv2.CAP_PROP_FPS)
         frame_number = int(second * fps)
 
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+
+        ret, frame = self.cap.read()
+
+        if not ret:
+            return None
+
+        # Convert BGR to RGB
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        return frame_rgb
+
+    def seek_to_frame(self, frame_number):
+        """
+        Seek to specific frame number and return frame (RGB).
+
+        Args:
+            frame_number (int): Frame number to seek to (0-indexed)
+
+        Returns:
+            numpy.ndarray: Frame in RGB format, or None if failed
+
+        Example:
+            >>> frame_rgb = loader.seek_to_frame(160)
+        """
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
 
         ret, frame = self.cap.read()

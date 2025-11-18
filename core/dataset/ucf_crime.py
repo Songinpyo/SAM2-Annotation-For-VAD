@@ -1,7 +1,6 @@
 class UCFCrimeAdapter:
-    def __init__(self, annotation_file, original_fps=30):
+    def __init__(self, annotation_file):
         self.annotation_file = annotation_file
-        self.original_fps = original_fps
         self.videos = self._parse_annotations()
 
     def _parse_annotations(self):
@@ -39,10 +38,8 @@ class UCFCrimeAdapter:
                             i += 2
                             continue
 
-                        # Convert frame numbers to seconds
-                        start_sec = int(start_frame / self.original_fps)
-                        end_sec = int(end_frame / self.original_fps)
-                        intervals.append((start_sec, end_sec))
+                        # Use frame numbers directly (no FPS conversion!)
+                        intervals.append((start_frame, end_frame))
                     except (ValueError, IndexError):
                         # Skip invalid entries
                         pass
@@ -54,8 +51,8 @@ class UCFCrimeAdapter:
                     continue
 
                 for idx, interval in enumerate(intervals):
-                    t0, t1 = interval
-                    display_name = f"{video_name} - Interval {idx + 1} [{t0}-{t1}s]"
+                    start_frame, end_frame = interval
+                    display_name = f"{video_name} - Interval {idx + 1} [Frame {start_frame}-{end_frame}]"
 
                     videos.append({
                         'name': video_name,
@@ -71,13 +68,13 @@ class UCFCrimeAdapter:
         """Get list of videos"""
         return self.videos
 
-    def expand_interval(self, t0, t1, dt, video_duration=None):
-        """Expand interval by dt on both sides"""
-        t0_prime = max(0, t0 - dt)
-        t1_prime = t1 + dt
+    def expand_interval(self, start_frame, end_frame, expand_frames, max_frame=None):
+        """Expand interval by expand_frames on both sides"""
+        start_expanded = max(0, start_frame - expand_frames)
+        end_expanded = end_frame + expand_frames
 
-        # Clamp to video duration if provided
-        if video_duration is not None:
-            t1_prime = min(t1_prime, video_duration)
+        # Clamp to video frame count if provided
+        if max_frame is not None:
+            end_expanded = min(end_expanded, max_frame)
 
-        return t0_prime, t1_prime
+        return start_expanded, end_expanded

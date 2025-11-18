@@ -1,7 +1,6 @@
 class XDViolenceAdapter:
-    def __init__(self, annotation_file, original_fps=30, gap_threshold=5):
+    def __init__(self, annotation_file, gap_threshold=5):
         self.annotation_file = annotation_file
-        self.original_fps = original_fps
         self.gap_threshold = gap_threshold
         self.videos = self._parse_annotations()
 
@@ -45,20 +44,20 @@ class XDViolenceAdapter:
                     continue
 
                 for idx, interval in enumerate(intervals):
-                    t0, t1 = interval
-                    display_name = f"{video_name} - Interval {idx + 1} [{t0}-{t1}s]"
+                    start_frame, end_frame = interval
+                    display_name = f"{video_name} - Interval {idx + 1} [Frame {start_frame}-{end_frame}]"
 
                     videos.append({
                         'name': video_name,
                         'display_name': display_name,
                         'interval_idx': idx,
-                        'intervals': [interval]  # Single interval only
+                        'intervals': [interval]  # Single interval: (start_frame, end_frame)
                     })
 
         return videos
 
     def _merge_frames_to_intervals(self, frames):
-        """Merge frame numbers into intervals"""
+        """Merge frame numbers into intervals (frame-based)"""
         if not frames:
             return []
 
@@ -71,18 +70,14 @@ class XDViolenceAdapter:
             if frame - end_frame <= self.gap_threshold:
                 end_frame = frame
             else:
-                # Convert to seconds
-                start_sec = int(start_frame / self.original_fps)
-                end_sec = int(end_frame / self.original_fps)
-                intervals.append((start_sec, end_sec))
+                # Use frame numbers directly (no FPS conversion!)
+                intervals.append((start_frame, end_frame))
 
                 start_frame = frame
                 end_frame = frame
 
         # Add last interval
-        start_sec = int(start_frame / self.original_fps)
-        end_sec = int(end_frame / self.original_fps)
-        intervals.append((start_sec, end_sec))
+        intervals.append((start_frame, end_frame))
 
         return intervals
 
@@ -90,13 +85,13 @@ class XDViolenceAdapter:
         """Get list of videos"""
         return self.videos
 
-    def expand_interval(self, t0, t1, dt, video_duration=None):
-        """Expand interval by dt on both sides"""
-        t0_prime = max(0, t0 - dt)
-        t1_prime = t1 + dt
+    def expand_interval(self, start_frame, end_frame, expand_frames, max_frame=None):
+        """Expand interval by expand_frames on both sides"""
+        start_expanded = max(0, start_frame - expand_frames)
+        end_expanded = end_frame + expand_frames
 
-        # Clamp to video duration if provided
-        if video_duration is not None:
-            t1_prime = min(t1_prime, video_duration)
+        # Clamp to video frame count if provided
+        if max_frame is not None:
+            end_expanded = min(end_expanded, max_frame)
 
-        return t0_prime, t1_prime
+        return start_expanded, end_expanded

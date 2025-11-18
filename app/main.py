@@ -23,7 +23,8 @@ from core.dataset.dota import DOTAAdapter
 from core.dataset.shanghaitech import ShanghaiTechAdapter
 from core.dataset.avenue import AvenueAdapter
 from core.eis.dt_select import select_dt_auto
-from core.eis.anchors import generate_anchors, subsample_anchors, pad_anchors
+from core.eis.frame_select import select_frame_interval_auto
+from core.eis.anchors import generate_anchors, generate_anchors_by_frame, subsample_anchors, pad_anchors
 from core.io.video import VideoLoader
 from core.io.export import export_annotations, validate_annotations, generate_statistics
 from core.io.import_txt import import_annotations
@@ -69,6 +70,14 @@ class CanvasViewer(QGraphicsView):
         self.original_width = 1
         self.original_height = 1
 
+        # Crosshair cursor lines
+        self.crosshair_h = None
+        self.crosshair_v = None
+        self.mouse_pos = None
+
+        # Enable mouse tracking for crosshair
+        self.setMouseTracking(True)
+
     def set_image(self, frame_rgb, target_width=800):
         """Load and display image"""
         self.scene.clear()
@@ -77,6 +86,11 @@ class CanvasViewer(QGraphicsView):
         self.current_rect = None
         self.current_point = None
         self.start_pos = None
+
+        # Reset crosshair
+        self.crosshair_h = None
+        self.crosshair_v = None
+        self.mouse_pos = None
 
         h, w = frame_rgb.shape[:2]
         self.original_width = w
@@ -202,6 +216,18 @@ class CanvasViewer(QGraphicsView):
             rect = QRectF(self.start_pos, pos).normalized()
             self.current_rect.setRect(rect)
 
+        # Update crosshair cursor
+        if self.pixmap_item:
+            pos = self.mapToScene(event.pos())
+            img_rect = self.pixmap_item.boundingRect()
+
+            # Only show crosshair when cursor is over the image
+            if img_rect.contains(pos):
+                self.mouse_pos = pos
+                self.update_crosshair()
+            else:
+                self.hide_crosshair()
+
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
@@ -237,6 +263,50 @@ class CanvasViewer(QGraphicsView):
         self.current_rect = None
         self.current_point = None
         self.start_pos = None
+
+    def update_crosshair(self):
+        """Update crosshair position"""
+        if not self.pixmap_item or not self.mouse_pos:
+            return
+
+        img_rect = self.pixmap_item.boundingRect()
+
+        # Remove old crosshair lines
+        if self.crosshair_h:
+            self.scene.removeItem(self.crosshair_h)
+        if self.crosshair_v:
+            self.scene.removeItem(self.crosshair_v)
+
+        # Create crosshair pen (thin gray lines)
+        pen = QPen(QColor(150, 150, 150), 1, Qt.DashLine)
+
+        # Horizontal line
+        self.crosshair_h = self.scene.addLine(
+            img_rect.left(), self.mouse_pos.y(),
+            img_rect.right(), self.mouse_pos.y(),
+            pen
+        )
+
+        # Vertical line
+        self.crosshair_v = self.scene.addLine(
+            self.mouse_pos.x(), img_rect.top(),
+            self.mouse_pos.x(), img_rect.bottom(),
+            pen
+        )
+
+        # Set Z-value high to draw on top
+        self.crosshair_h.setZValue(1000)
+        self.crosshair_v.setZValue(1000)
+
+    def hide_crosshair(self):
+        """Hide crosshair when cursor leaves image"""
+        if self.crosshair_h:
+            self.scene.removeItem(self.crosshair_h)
+            self.crosshair_h = None
+        if self.crosshair_v:
+            self.scene.removeItem(self.crosshair_v)
+            self.crosshair_v = None
+        self.mouse_pos = None
 
 
 class MainWindow(QMainWindow):
@@ -330,12 +400,12 @@ class MainWindow(QMainWindow):
         video_nav_hint.setStyleSheet("color: gray; font-size: 10px; font-style: italic;")
         layout.addWidget(video_nav_hint)
 
-        # Dt mode
-        layout.addWidget(QLabel("Δt Mode:"))
-        self.dt_combo = QComboBox()
-        self.dt_combo.addItems(["AUTO", "1s", "2s", "4s", "10s"])
-        self.dt_combo.currentTextChanged.connect(self.on_dt_changed)
-        layout.addWidget(self.dt_combo)
+        # Frame interval mode
+        layout.addWidget(QLabel("Frame Interval:"))
+        self.frame_interval_combo = QComboBox()
+        self.frame_interval_combo.addItems(["AUTO", "30", "18", "6", "3"])
+        self.frame_interval_combo.currentTextChanged.connect(self.on_frame_interval_changed)
+        layout.addWidget(self.frame_interval_combo)
 
         # Run name
         layout.addWidget(QLabel("Run Name:"))
@@ -635,50 +705,42 @@ class MainWindow(QMainWindow):
 
         if dataset == "ucf-crime":
             self.current_adapter = UCFCrimeAdapter(
-                self.config['dataset']['ucf_crime']['annotation_file'],
-                original_fps=self.config['dataset']['ucf_crime']['original_fps']
+                self.config['dataset']['ucf_crime']['annotation_file']
             )
         elif dataset == "xd-violence":
             self.current_adapter = XDViolenceAdapter(
                 self.config['dataset']['xd_violence']['annotation_file'],
-                original_fps=self.config['dataset']['xd_violence']['original_fps'],
-                gap_threshold=self.config['dataset']['xd_violence']['gap_threshold']
+                gap_threshold=self.config['dataset']['xd_violence'].get('gap_threshold', 5)
             )
         elif dataset == "view360":
             self.current_adapter = VIEW360Adapter(
                 self.config['dataset']['view360']['annotation_file'],
-                self.config['dataset']['view360']['videos_dir'],
-                original_fps=self.config['dataset']['view360']['original_fps']
+                self.config['dataset']['view360']['videos_dir']
             )
         elif dataset == "ped1":
             self.current_adapter = PedAdapter(
                 self.config['dataset']['ped1']['annotation_file'],
-                self.config['dataset']['ped1']['videos_dir'],
-                original_fps=self.config['dataset']['ped1']['original_fps']
+                self.config['dataset']['ped1']['videos_dir']
             )
         elif dataset == "ped2":
             self.current_adapter = PedAdapter(
                 self.config['dataset']['ped2']['annotation_file'],
-                self.config['dataset']['ped2']['videos_dir'],
-                original_fps=self.config['dataset']['ped2']['original_fps']
+                self.config['dataset']['ped2']['videos_dir']
             )
         elif dataset == "dota":
             self.current_adapter = DOTAAdapter(
                 self.config['dataset']['dota']['annotation_file'],
-                self.config['dataset']['dota']['videos_dir'],
-                original_fps=self.config['dataset']['dota']['original_fps']
+                self.config['dataset']['dota']['videos_dir']
             )
         elif dataset == "shanghaitech":
             self.current_adapter = ShanghaiTechAdapter(
                 self.config['dataset']['shanghaitech']['annotation_file'],
-                self.config['dataset']['shanghaitech']['videos_dir'],
-                original_fps=self.config['dataset']['shanghaitech']['original_fps']
+                self.config['dataset']['shanghaitech']['videos_dir']
             )
         elif dataset == "avenue":
             self.current_adapter = AvenueAdapter(
                 self.config['dataset']['avenue']['annotation_file'],
-                self.config['dataset']['avenue']['videos_dir'],
-                original_fps=self.config['dataset']['avenue']['original_fps']
+                self.config['dataset']['avenue']['videos_dir']
             )
         else:
             return
@@ -715,10 +777,17 @@ class MainWindow(QMainWindow):
             self.ann_state.history.clear()
             self.ann_state.history_idx = -1
 
+            # Reset entity selection to actor0 and bbox tool
+            self.role_buttons['actor'].setChecked(True)
+            self.id_spin.setValue(0)
+            self.tool_buttons['bbox'].setChecked(True)
+            self.on_entity_changed()
+            self.on_tool_changed()
+
         self.load_video_and_anchors()
 
-    def on_dt_changed(self, dt_mode):
-        """Dt mode changed"""
+    def on_frame_interval_changed(self, interval_mode):
+        """Frame interval mode changed"""
         if self.current_video:
             self.load_video_and_anchors()
 
@@ -743,34 +812,42 @@ class MainWindow(QMainWindow):
         self.video_loader = VideoLoader(video_path)
         info = self.video_loader.get_info()
 
-        # Calculate video duration in seconds
-        video_duration = int(info['frame_count'] / info['fps']) if info['fps'] > 0 else None
+        # Get max frame number (frame_count - 1, since frames are 0-indexed)
+        max_frame = info['frame_count'] - 1 if info['frame_count'] > 0 else None
 
-        # Generate anchors
+        # Generate anchors (FRAME-BASED)
         intervals = self.current_video['intervals']
         if not intervals:
             QMessageBox.warning(self, "Warning", "No anomaly intervals found for this video")
             return
 
-        t0, t1 = intervals[0]
+        start_frame, end_frame = intervals[0]  # Frame numbers!
 
-        # Determine dt
-        dt_mode = self.dt_combo.currentText()
-        if dt_mode == "AUTO":
-            dt = select_dt_auto(
-                t1 - t0,
-                self.config['eis']['dt_candidates'],
+        # Determine frame interval
+        interval_mode = self.frame_interval_combo.currentText()
+        if interval_mode == "AUTO":
+            frame_interval = select_frame_interval_auto(
+                start_frame,
+                end_frame,
+                self.config['eis']['frame_interval_candidates'],
                 self.config['eis']['min_K'],
                 self.config['eis']['max_K']
             )
         else:
-            dt = int(dt_mode[:-1])
+            frame_interval = int(interval_mode)
 
-        # Expand interval (clamped to video duration)
-        t0_prime, t1_prime = self.current_adapter.expand_interval(t0, t1, dt, video_duration)
+        # Calculate expand_frames (default: 2x frame_interval)
+        expand_frames = frame_interval * 2
 
-        # Generate anchors
-        anchors = generate_anchors(t0_prime, t1_prime, dt)
+        # Expand interval (clamped to max_frame)
+        start_expanded, end_expanded = self.current_adapter.expand_interval(
+            start_frame, end_frame, expand_frames, max_frame
+        )
+
+        # Generate anchors by frame
+        anchors = generate_anchors_by_frame(
+            start_frame, end_frame, frame_interval, expand_frames
+        )
         K = len(anchors)
 
         # Handle edge cases
@@ -786,27 +863,28 @@ class MainWindow(QMainWindow):
         # Create unique video identifier including interval
         video_id = f"{self.current_video['name']}_interval{self.current_video.get('interval_idx', 0)}"
 
-        # Update annotation state
+        # Update annotation state (frame_interval instead of dt)
         self.ann_state.set_video(
             video_id,
             anchors,
-            dt,
+            frame_interval,  # Store frame_interval instead of dt
             info['width'],
             info['height']
         )
 
-        # Update timeline info
+        # Update timeline info (FRAME-BASED)
         self.timeline_info_label.setText(
-            f"Interval: [{t0}, {t1}] → [{t0_prime}, {t1_prime}] (expanded by Δt={dt}) | K = {K}"
+            f"Interval: [F{start_frame}, F{end_frame}] → [F{start_expanded}, F{end_expanded}] "
+            f"(expanded by {expand_frames} frames) | Frame Interval: {frame_interval} | K = {K}"
         )
 
-        # Create timeline buttons
+        # Create timeline buttons (FRAME-BASED)
         for i in reversed(range(self.timeline_layout.count())):
             self.timeline_layout.itemAt(i).widget().setParent(None)
 
         self.timeline_buttons = []
-        for i, anchor in enumerate(anchors):
-            btn = QPushButton(f"{anchor}s")
+        for i, anchor_frame in enumerate(anchors):
+            btn = QPushButton(f"F{anchor_frame}")
             btn.clicked.connect(lambda checked, idx=i: self.jump_to_anchor(idx))
             self.timeline_layout.addWidget(btn)
             self.timeline_buttons.append(btn)
@@ -824,8 +902,8 @@ class MainWindow(QMainWindow):
 
         current_idx = self.ann_state.current_anchor_idx
 
-        for i, (btn, anchor_sec) in enumerate(zip(self.timeline_buttons, self.anchors)):
-            annotations = self.ann_state.get_annotations_for_frame(anchor_sec)
+        for i, (btn, anchor_frame) in enumerate(zip(self.timeline_buttons, self.anchors)):
+            annotations = self.ann_state.get_annotations_for_frame(anchor_frame)
             has_annotations = bool(annotations)
             is_current = (i == current_idx)
 
@@ -866,32 +944,41 @@ class MainWindow(QMainWindow):
             self.load_current_frame()
 
     def load_current_frame(self):
-        """Load and display current frame"""
+        """Load and display current frame (FRAME-BASED)"""
         if not self.anchors or not self.video_loader:
             return
 
         idx = self.ann_state.current_anchor_idx
-        anchor_sec = self.anchors[idx]
+        anchor_frame = self.anchors[idx]  # Frame number!
 
         # Calculate progress statistics
-        total_frames = len(self.anchors)
+        total_anchors = len(self.anchors)
         annotated_count = sum(1 for a in self.anchors if self.ann_state.get_annotations_for_frame(a))
-        progress_percent = int(annotated_count / total_frames * 100) if total_frames > 0 else 0
-        current_annotations = self.ann_state.get_annotations_for_frame(anchor_sec)
+        progress_percent = int(annotated_count / total_anchors * 100) if total_anchors > 0 else 0
+        current_annotations = self.ann_state.get_annotations_for_frame(anchor_frame)
         current_ann_count = len(current_annotations)
 
-        # Update label with progress stats
+        # Update label with progress stats (FRAME-BASED)
         self.current_frame_label.setText(
-            f"Frame: {anchor_sec}s ({idx + 1}/{total_frames}) | "
-            f"📊 {annotated_count}/{total_frames} ({progress_percent}%) | "
+            f"Frame: {anchor_frame} ({idx + 1}/{total_anchors}) | "
+            f"📊 {annotated_count}/{total_anchors} ({progress_percent}%) | "
             f"📝 {current_ann_count}"
         )
 
-        # Load frame
-        frame_rgb = self.video_loader.seek_to_second(anchor_sec)
+        # Load frame (FRAME-BASED)
+        frame_rgb = self.video_loader.seek_to_frame(anchor_frame)
 
         if frame_rgb is None:
-            QMessageBox.warning(self, "Error", "Failed to load frame")
+            # Get video info for debugging
+            info = self.video_loader.get_info()
+            QMessageBox.warning(
+                self,
+                "Error",
+                f"Failed to load frame {anchor_frame}\n"
+                f"Video has {info['frame_count']} frames (0-{info['frame_count']-1})\n"
+                f"FPS: {info['fps']}\n"
+                f"Anchors: {self.anchors[:5]}... (showing first 5)"
+            )
             return
 
         self.current_frame = frame_rgb
@@ -907,8 +994,8 @@ class MainWindow(QMainWindow):
         self.canvas_viewer.set_image(self.current_frame, display_width)
 
         # Draw existing annotations
-        anchor_sec = self.anchors[self.ann_state.current_anchor_idx]
-        annotations = self.ann_state.get_annotations_for_frame(anchor_sec)
+        anchor_frame = self.anchors[self.ann_state.current_anchor_idx]
+        annotations = self.ann_state.get_annotations_for_frame(anchor_frame)
         self.canvas_viewer.draw_annotations(annotations, self.config)
 
         # Update canvas drawing mode
@@ -921,8 +1008,8 @@ class MainWindow(QMainWindow):
         """Update current annotations list"""
         self.annotations_list.clear()
 
-        anchor_sec = self.anchors[self.ann_state.current_anchor_idx]
-        annotations = self.ann_state.get_annotations_for_frame(anchor_sec)
+        anchor_frame = self.anchors[self.ann_state.current_anchor_idx]
+        annotations = self.ann_state.get_annotations_for_frame(anchor_frame)
 
         if not annotations:
             item = QListWidgetItem("No annotations for this frame yet")
@@ -1050,15 +1137,15 @@ class MainWindow(QMainWindow):
             return
 
         obj_type, coords = obj_data
-        anchor_sec = self.anchors[self.ann_state.current_anchor_idx]
+        anchor_frame = self.anchors[self.ann_state.current_anchor_idx]
         entity = self.get_selected_entity()
         tool = self.get_selected_tool()
 
         if obj_type == 'bbox':
-            self.ann_state.add_bbox(anchor_sec, entity, coords)
+            self.ann_state.add_bbox(anchor_frame, entity, coords)
             self.show_status("BBox saved ✓", 2000)
         elif obj_type == 'point':
-            self.ann_state.add_point(anchor_sec, entity, coords, tool)
+            self.ann_state.add_point(anchor_frame, entity, coords, tool)
             self.show_status(f"{tool} saved ✓", 2000)
 
         # Clear drawing state after saving
@@ -1084,8 +1171,8 @@ class MainWindow(QMainWindow):
         if not entity_id:
             return
 
-        anchor_sec = self.anchors[self.ann_state.current_anchor_idx]
-        self.ann_state.delete_annotation(anchor_sec, entity_id)
+        anchor_frame = self.anchors[self.ann_state.current_anchor_idx]
+        self.ann_state.delete_annotation(anchor_frame, entity_id)
 
         self.refresh_canvas()
         self.update_annotations_list()

@@ -1,14 +1,20 @@
 import os
 
 class DOTAAdapter:
-    def __init__(self, annotation_file, videos_dir, original_fps=30):
+    def __init__(self, annotation_file, videos_dir):
+        """
+        DOTA dataset adapter (frame-based).
+
+        Args:
+            annotation_file: Path to temporal annotation file
+            videos_dir: Directory containing video files
+        """
         self.annotation_file = annotation_file
         self.videos_dir = videos_dir
-        self.original_fps = original_fps
         self.videos = self._parse_annotations()
 
     def _parse_annotations(self):
-        """Parse DOTA annotation file"""
+        """Parse DOTA annotation file (frame-based)"""
         # First pass: collect all intervals per video
         video_intervals = {}
 
@@ -40,11 +46,8 @@ class DOTAAdapter:
                             start_frame = int(group_parts[0])
                             end_frame = int(group_parts[1])
 
-                            # Convert frame numbers to seconds
-                            start_sec = int(start_frame / self.original_fps)
-                            end_sec = int(end_frame / self.original_fps)
-
-                            video_intervals[video_name].append((start_sec, end_sec))
+                            # Use frame numbers directly (no FPS conversion!)
+                            video_intervals[video_name].append((start_frame, end_frame))
 
                         except (ValueError, IndexError):
                             # Skip invalid entries
@@ -64,15 +67,15 @@ class DOTAAdapter:
 
             # Create separate entry for each interval
             for idx, interval in enumerate(intervals):
-                t0, t1 = interval
-                display_name = f"{video_name} - Interval {idx + 1} [{t0}-{t1}s]"
+                start_frame, end_frame = interval
+                display_name = f"{video_name} - Interval {idx + 1} [Frame {start_frame}-{end_frame}]"
 
                 videos.append({
                     'name': actual_video_name,  # Actual filename
                     'display_name': display_name,
                     'annotation_name': video_name,  # Original annotation name
                     'interval_idx': idx,
-                    'intervals': [interval]  # Single interval only
+                    'intervals': [interval]  # Single interval: (start_frame, end_frame)
                 })
 
         return videos
@@ -81,13 +84,24 @@ class DOTAAdapter:
         """Get list of videos"""
         return self.videos
 
-    def expand_interval(self, t0, t1, dt, video_duration=None):
-        """Expand interval by dt on both sides"""
-        t0_prime = max(0, t0 - dt)
-        t1_prime = t1 + dt
+    def expand_interval(self, start_frame, end_frame, expand_frames, max_frame=None):
+        """
+        Expand interval by expand_frames on both sides.
 
-        # Clamp to video duration if provided
-        if video_duration is not None:
-            t1_prime = min(t1_prime, video_duration)
+        Args:
+            start_frame: Start frame number
+            end_frame: End frame number
+            expand_frames: Number of frames to expand on each side
+            max_frame: Maximum frame number (video frame count - 1)
 
-        return t0_prime, t1_prime
+        Returns:
+            tuple: (expanded_start, expanded_end)
+        """
+        start_expanded = max(0, start_frame - expand_frames)
+        end_expanded = end_frame + expand_frames
+
+        # Clamp to video frame count if provided
+        if max_frame is not None:
+            end_expanded = min(end_expanded, max_frame)
+
+        return start_expanded, end_expanded

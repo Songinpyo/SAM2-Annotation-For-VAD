@@ -2,14 +2,14 @@ import os
 import glob
 
 class VIEW360Adapter:
-    def __init__(self, annotation_file, videos_dir, original_fps=30):
+    def __init__(self, annotation_file, videos_dir):
+        """VIEW360 dataset adapter (frame-based)."""
         self.annotation_file = annotation_file
         self.videos_dir = videos_dir
-        self.original_fps = original_fps
         self.videos = self._parse_annotations()
 
     def _parse_annotations(self):
-        """Parse VIEW360 annotation file"""
+        """Parse VIEW360 annotation file (frame-based)"""
         # First pass: collect all intervals per video
         video_intervals = {}
 
@@ -35,11 +35,8 @@ class VIEW360Adapter:
                         start_frame = int(parts[i])
                         end_frame = int(parts[i + 1])
 
-                        # Convert frame numbers to seconds
-                        start_sec = int(start_frame / self.original_fps)
-                        end_sec = int(end_frame / self.original_fps)
-
-                        video_intervals[video_name].append((start_sec, end_sec))
+                        # Use frame numbers directly (no FPS conversion!)
+                        video_intervals[video_name].append((start_frame, end_frame))
 
                     except (ValueError, IndexError):
                         # Skip invalid entries
@@ -85,15 +82,15 @@ class VIEW360Adapter:
 
             # Create separate entry for each interval
             for idx, interval in enumerate(intervals):
-                t0, t1 = interval
-                display_name = f"{video_name} - Interval {idx + 1} [{t0}-{t1}s]"
+                start_frame, end_frame = interval
+                display_name = f"{video_name} - Interval {idx + 1} [Frame {start_frame}-{end_frame}]"
 
                 videos.append({
-                    'name': actual_video_name,  # Actual filename with _1fps.mp4
+                    'name': actual_video_name,  # Actual filename
                     'display_name': display_name,
                     'annotation_name': video_name,  # Original annotation name
                     'interval_idx': idx,
-                    'intervals': [interval]  # Single interval only
+                    'intervals': [interval]  # Single interval: (start_frame, end_frame)
                 })
 
         return videos
@@ -102,13 +99,13 @@ class VIEW360Adapter:
         """Get list of videos"""
         return self.videos
 
-    def expand_interval(self, t0, t1, dt, video_duration=None):
-        """Expand interval by dt on both sides"""
-        t0_prime = max(0, t0 - dt)
-        t1_prime = t1 + dt
+    def expand_interval(self, start_frame, end_frame, expand_frames, max_frame=None):
+        """Expand interval by expand_frames on both sides"""
+        start_expanded = max(0, start_frame - expand_frames)
+        end_expanded = end_frame + expand_frames
 
-        # Clamp to video duration if provided
-        if video_duration is not None:
-            t1_prime = min(t1_prime, video_duration)
+        # Clamp to video frame count if provided
+        if max_frame is not None:
+            end_expanded = min(end_expanded, max_frame)
 
-        return t0_prime, t1_prime
+        return start_expanded, end_expanded
