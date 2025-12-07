@@ -14,6 +14,16 @@ class ShanghaiTechAdapter:
         - anomaly_flag: 0 = normal (entire video), 1 = anomaly exists in [start, end]
         """
         videos = []
+        self.missing_videos = []
+
+        # Get all actual video files in directory
+        if os.path.exists(self.videos_dir):
+            all_files = set(os.listdir(self.videos_dir))
+            actual_videos = {f for f in all_files if f.lower().endswith(('.mp4', '.avi', '.mkv', '.mov'))}
+        else:
+            actual_videos = set()
+            
+        matched_videos = set()
 
         with open(self.annotation_file, 'r') as f:
             for line in f:
@@ -34,13 +44,23 @@ class ShanghaiTechAdapter:
                 except (ValueError, IndexError):
                     continue
 
-                # Video filename: {video_name}_video.mp4
-                actual_video_name = f"{video_name}_video.mp4"
-
-                # Check if video exists
-                video_path = os.path.join(self.videos_dir, actual_video_name)
-                if not os.path.exists(video_path):
+                except (ValueError, IndexError):
                     continue
+
+                # Try patterns: "{name}_video.mp4" (old) and "{name}.mp4" (current)
+                candidates = [f"{video_name}_video.mp4", f"{video_name}.mp4"]
+                
+                found_name = None
+                for name in candidates:
+                    if os.path.exists(os.path.join(self.videos_dir, name)):
+                        found_name = name
+                        break
+                
+                if not found_name:
+                    self.missing_videos.append(video_name)
+                    continue
+                    
+                matched_videos.add(found_name)
 
                 # Use frame numbers directly (no FPS conversion!)
                 # Create video entry
@@ -52,12 +72,15 @@ class ShanghaiTechAdapter:
                     display_name = f"{video_name} - Anomaly [Frame {start_frame}-{end_frame}]"
 
                 videos.append({
-                    'name': actual_video_name,  # Actual filename
+                    'name': found_name,  # Actual filename
                     'display_name': display_name,
                     'annotation_name': video_name,  # Original annotation name
                     'interval_idx': 0,
                     'intervals': [(start_frame, end_frame)]
                 })
+        
+        # Identify unannotated videos
+        self.unannotated_videos = list(actual_videos - matched_videos)
 
         return videos
 

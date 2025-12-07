@@ -1,3 +1,5 @@
+import os
+
 class UCFCrimeAdapter:
     def __init__(self, annotation_file):
         self.annotation_file = annotation_file
@@ -62,7 +64,34 @@ class UCFCrimeAdapter:
                         'intervals': [interval]  # Single interval only
                     })
 
-        return videos
+        # Second pass: check for content mismatches and track validation stats
+        self.missing_videos = []
+        
+        # Get all actual video files in directory
+        videos_dir = os.path.dirname(self.annotation_file.replace('annotations.txt', 'videos/'))
+        if os.path.exists(videos_dir):
+            all_files = set(os.listdir(videos_dir))
+            actual_videos = {f for f in all_files if f.lower().endswith(('.mp4', '.avi', '.mkv', '.mov'))}
+        else:
+            actual_videos = set()
+            
+        matched_videos = set()
+
+        valid_videos = []
+        for v in videos:
+            video_name = v['name']
+            video_path = os.path.join(videos_dir, video_name)
+            
+            if os.path.exists(video_path):
+                matched_videos.add(video_name)
+                valid_videos.append(v)
+            else:
+                self.missing_videos.append(video_name)
+        
+        # Identify unannotated videos
+        self.unannotated_videos = list(actual_videos - matched_videos)
+
+        return valid_videos
 
     def get_videos(self):
         """Get list of videos"""

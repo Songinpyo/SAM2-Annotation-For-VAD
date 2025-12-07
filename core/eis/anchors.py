@@ -41,36 +41,21 @@ def generate_anchors_by_frame(start_frame, end_frame, frame_interval, expand_fra
         # Expanded: 160-60=100 to 320+60=380
         # Aligned to 30-frame intervals: 120, 150, 180, ...
     """
-    # Default expansion: 2x the frame interval
-    if expand_frames is None:
-        expand_frames = frame_interval * 2
-
-    # Expand interval
-    start_expanded = max(0, start_frame - expand_frames)
-    end_expanded = end_frame + expand_frames
-
-    # Align to frame_interval multiples starting from start_frame
-    # This ensures anchors are evenly spaced and include the anomaly interval
-
-    # Find the first anchor (closest multiple of frame_interval <= start_expanded)
-    first_anchor = (start_expanded // frame_interval) * frame_interval
-
-    # If first_anchor is before start_expanded, move to next multiple
-    if first_anchor < start_expanded:
-        first_anchor += frame_interval
-
-    # Generate anchors
-    anchors = []
-    current = first_anchor
-
-    while current <= end_expanded:
+    # Logic: Start at start_frame, step by interval, force end_frame.
+    # Anchors will be [start, start+dt, start+2dt, ..., end]
+    # The last interval might be smaller than dt.
+    
+    anchors = [start_frame]
+    current = start_frame + frame_interval
+    
+    while current < end_frame:
         anchors.append(current)
         current += frame_interval
-
-    # Ensure we have at least one anchor
-    if not anchors:
-        anchors = [start_frame]
-
+        
+    # Always include the end frame
+    if end_frame > start_frame:
+        anchors.append(end_frame)
+        
     return anchors
 
 

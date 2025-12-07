@@ -3,11 +3,6 @@ dataset:
     annotation_file: "data/ucf-crime/annotations.txt"
     videos_dir: "data/ucf-crime/videos"
 
-  xd_violence:
-    annotation_file: "data/xd-violence/annotations.txt"
-    videos_dir: "data/xd-violence/videos"
-    gap_threshold: 5
-
   view360:
     annotation_file: "data/view360/annotations.txt"
     videos_dir: "data/view360/videos"
@@ -37,14 +32,9 @@ dataset:
     videos_dir: "data/avenue/videos"
 
 eis:
-  # Frame-based interval selection (for 30fps videos, compatible with 10fps downstream)
-  # 30 frames = 1.0s @ 30fps = 10 frames @ 10fps
-  # 18 frames = 0.6s @ 30fps = 6 frames @ 10fps
-  # 6 frames = 0.2s @ 30fps = 2 frames @ 10fps
-  # 3 frames = 0.1s @ 30fps = 1 frame @ 10fps
-  frame_interval_candidates: [30, 18, 6, 3]
-  min_K: 3
-  max_K: 15
+  frame_interval_candidates: [30, 24, 18, 12, 6, 3, 2, 1]
+  min_K: 1
+  max_K: 3000
 
 entity:
   roles: ["actor", "subject", "related"]

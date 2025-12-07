@@ -4,7 +4,6 @@ Annotation tool for anomaly detection datasets using Equal-Interval Seeding (EIS
 
 ## Features
 
-- EIS frame selection (K ∈ [3, 15])
 - Multi-entity annotation (actor, subject, related)
 - Entity notes support (optional text descriptions)
 - Undo/Redo history
@@ -18,8 +17,6 @@ pip install -r requirements.txt
 ```
 
 ## Usage
-
-Place 1fps converted videos in `data/ucf-crime/videos/` or `data/xd-violence/videos/`, then run:
 
 ```bash
 python app/main.py

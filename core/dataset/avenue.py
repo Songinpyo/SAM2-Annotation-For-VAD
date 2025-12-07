@@ -44,15 +44,32 @@ class AvenueAdapter:
 
         # Second pass: create video entries with intervals
         videos = []
+        self.missing_videos = []
+
+        # Get all actual video files in directory
+        if os.path.exists(self.videos_dir):
+            all_files = set(os.listdir(self.videos_dir))
+            actual_videos = {f for f in all_files if f.lower().endswith(('.mp4', '.avi', '.mkv', '.mov'))}
+        else:
+            actual_videos = set()
+
+        matched_videos = set()
 
         for video_num, intervals in video_intervals.items():
-            # Video filename: {video_num}_video.mp4
-            actual_video_name = f"{video_num}_video.mp4"
-
-            # Check if video exists
-            video_path = os.path.join(self.videos_dir, actual_video_name)
-            if not os.path.exists(video_path):
+            # Try patterns: "{num}_video.mp4" (old) and "{num}.mp4" (current)
+            candidates = [f"{video_num}_video.mp4", f"{video_num}.mp4"]
+            
+            found_name = None
+            for name in candidates:
+                if os.path.exists(os.path.join(self.videos_dir, name)):
+                    found_name = name
+                    break
+            
+            if not found_name:
+                self.missing_videos.append(video_num)
                 continue
+
+            matched_videos.add(found_name)
 
             # Create separate entry for each interval
             for idx, interval in enumerate(intervals):
@@ -60,12 +77,15 @@ class AvenueAdapter:
                 display_name = f"{video_num} - Interval {idx + 1} [Frame {start_frame}-{end_frame}]"
 
                 videos.append({
-                    'name': actual_video_name,  # Actual filename
+                    'name': found_name,  # Actual filename
                     'display_name': display_name,
                     'annotation_name': video_num,  # Original annotation name
                     'interval_idx': idx,
                     'intervals': [interval]  # Single interval: (start_frame, end_frame)
                 })
+        
+        # Identify unannotated videos (files on disk but not in annotation)
+        self.unannotated_videos = list(actual_videos - matched_videos)
 
         return videos
 

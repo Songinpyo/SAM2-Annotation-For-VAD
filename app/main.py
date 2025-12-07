@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from core.utils import load_config
 from core.dataset.ucf_crime import UCFCrimeAdapter
-from core.dataset.xd_violence import XDViolenceAdapter
+
 from core.dataset.view360 import VIEW360Adapter
 from core.dataset.ped import PedAdapter
 from core.dataset.dota import DOTAAdapter
@@ -385,7 +385,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Dataset:"))
         self.dataset_combo = QComboBox()
         self.dataset_combo.addItem("-- Select Dataset --")
-        self.dataset_combo.addItems(["ucf-crime", "xd-violence", "view360", "ped1", "ped2", "dota", "shanghaitech", "avenue"])
+        self.dataset_combo.addItems(["ucf-crime", "view360", "ped1", "ped2", "dota", "shanghaitech", "avenue"])
         self.dataset_combo.currentTextChanged.connect(self.on_dataset_changed)
         layout.addWidget(self.dataset_combo)
 
@@ -403,7 +403,8 @@ class MainWindow(QMainWindow):
         # Frame interval mode
         layout.addWidget(QLabel("Frame Interval:"))
         self.frame_interval_combo = QComboBox()
-        self.frame_interval_combo.addItems(["AUTO", "30", "18", "6", "3"])
+        self.frame_interval_combo.addItems(["30", "24", "18", "12", "6", "5", "3", "2", "1"])
+        self.frame_interval_combo.setCurrentText("5")
         self.frame_interval_combo.currentTextChanged.connect(self.on_frame_interval_changed)
         layout.addWidget(self.frame_interval_combo)
 
@@ -707,11 +708,7 @@ class MainWindow(QMainWindow):
             self.current_adapter = UCFCrimeAdapter(
                 self.config['dataset']['ucf_crime']['annotation_file']
             )
-        elif dataset == "xd-violence":
-            self.current_adapter = XDViolenceAdapter(
-                self.config['dataset']['xd_violence']['annotation_file'],
-                gap_threshold=self.config['dataset']['xd_violence'].get('gap_threshold', 5)
-            )
+
         elif dataset == "view360":
             self.current_adapter = VIEW360Adapter(
                 self.config['dataset']['view360']['annotation_file'],
@@ -746,6 +743,52 @@ class MainWindow(QMainWindow):
             return
 
         videos = self.current_adapter.get_videos()
+        
+        # Check for validation issues
+        missing = getattr(self.current_adapter, 'missing_videos', [])
+        unannotated = getattr(self.current_adapter, 'unannotated_videos', [])
+        
+        if missing or unannotated:
+            # Create log message
+            log_lines = [f"Validation Report for dataset: {dataset}", "="*50]
+            
+            if missing:
+                log_lines.append(f"\n[CRITICAL] Missing Videos ({len(missing)}):")
+                log_lines.append("These videos are in the annotation file but NOT in the videos directory.")
+                log_lines.extend([f" - {v}" for v in missing])
+            
+            if unannotated:
+                log_lines.append(f"\n[WARNING] Unannotated Videos ({len(unannotated)}):")
+                log_lines.append("These videos are in the directory but NOT in the annotation file.")
+                log_lines.extend([f" - {v}" for v in unannotated])
+            
+            # Save to log file
+            log_dir = "logs"
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(log_dir, f"validation_{dataset}.log")
+            
+            with open(log_path, 'w') as f:
+                f.write('\n'.join(log_lines))
+            
+            # Show Alert
+            msg = "Dataset Validation Issues Found!\n\n"
+            if missing:
+                msg += f"❌ {len(missing)} videos from annotations are missing on disk.\n"
+            if unannotated:
+                msg += f"⚠️ {len(unannotated)} videos on disk are not annotated.\n"
+            
+            msg += f"\nDetailed log saved to:\n{os.path.abspath(log_path)}"
+            
+            QMessageBox.warning(self, "Dataset Validation", msg)
+
+        import re
+        def natural_key(text):
+            """Natural sort key for Mac/Windows-like sorting"""
+            return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text)]
+
+        # Sort videos by display name using natural sort
+        videos.sort(key=lambda v: natural_key(v.get('display_name', v['name'])))
+
         self.video_combo.addItem("-- Select Video --")
         for v in videos:
             # Use display_name if available, otherwise use name
@@ -776,6 +819,9 @@ class MainWindow(QMainWindow):
             self.ann_state.entity_notes.clear()
             self.ann_state.history.clear()
             self.ann_state.history_idx = -1
+            
+            # Save initial empty state to history so we can undo the first action
+            self.ann_state.save_history()
 
             # Reset entity selection to actor0 and bbox tool
             self.role_buttons['actor'].setChecked(True)
@@ -825,39 +871,21 @@ class MainWindow(QMainWindow):
 
         # Determine frame interval
         interval_mode = self.frame_interval_combo.currentText()
-        if interval_mode == "AUTO":
-            frame_interval = select_frame_interval_auto(
-                start_frame,
-                end_frame,
-                self.config['eis']['frame_interval_candidates'],
-                self.config['eis']['min_K'],
-                self.config['eis']['max_K']
-            )
-        else:
-            frame_interval = int(interval_mode)
+        frame_interval = int(interval_mode)
 
-        # Calculate expand_frames (default: 2x frame_interval)
-        expand_frames = frame_interval * 2
-
-        # Expand interval (clamped to max_frame)
-        start_expanded, end_expanded = self.current_adapter.expand_interval(
-            start_frame, end_frame, expand_frames, max_frame
-        )
+        # Calculate expand_frames (User requested to remove expansion logic)
+        expand_frames = 0
 
         # Generate anchors by frame
+        # Logic: Fixed endpoints (start/end) + Uniform sampling
         anchors = generate_anchors_by_frame(
             start_frame, end_frame, frame_interval, expand_frames
         )
-        K = len(anchors)
-
-        # Handle edge cases
-        if K > self.config['eis']['max_K']:
-            anchors = subsample_anchors(anchors, self.config['eis']['max_K'])
-            K = len(anchors)
-        elif K < self.config['eis']['min_K']:
-            anchors = pad_anchors(anchors, self.config['eis']['min_K'])
-            K = len(anchors)
-
+        
+        # User requested to ignore min_K/max_K constraints logic for now
+        # K = len(anchors)
+        # if K > self.config['eis']['max_K']: ...
+        
         self.anchors = anchors
 
         # Create unique video identifier including interval

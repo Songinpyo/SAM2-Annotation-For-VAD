@@ -11,6 +11,7 @@ ENV/
 
 # Annotations output
 annotations/
+logs/
 
 # Cache
 cache/
