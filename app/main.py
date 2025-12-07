@@ -882,10 +882,8 @@ class MainWindow(QMainWindow):
             start_frame, end_frame, frame_interval, expand_frames
         )
         
-        # User requested to ignore min_K/max_K constraints logic for now
-        # K = len(anchors)
-        # if K > self.config['eis']['max_K']: ...
-        
+        # Calculate K for display
+        K = len(anchors)
         self.anchors = anchors
 
         # Create unique video identifier including interval
@@ -902,8 +900,7 @@ class MainWindow(QMainWindow):
 
         # Update timeline info (FRAME-BASED)
         self.timeline_info_label.setText(
-            f"Interval: [F{start_frame}, F{end_frame}] → [F{start_expanded}, F{end_expanded}] "
-            f"(expanded by {expand_frames} frames) | Frame Interval: {frame_interval} | K = {K}"
+            f"Range: [F{start_frame}, F{end_frame}] | Frame Interval: {frame_interval} | K = {K}"
         )
 
         # Create timeline buttons (FRAME-BASED)
