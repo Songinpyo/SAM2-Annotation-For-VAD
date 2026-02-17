@@ -1,16 +1,16 @@
 import sys
 import os
+import re
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QComboBox, QSlider, QSpinBox, QRadioButton,
     QButtonGroup, QScrollArea, QSplitter, QMessageBox, QLineEdit,
+    QCheckBox,
     QGroupBox, QListWidget, QListWidgetItem, QTextEdit
 )
 from PyQt5.QtCore import Qt, QRectF, QPointF, QTimer, pyqtSignal
-from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QPixmap, QImage, QKeySequence
-from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsEllipseItem, QShortcut
-import numpy as np
-from PIL import Image
+from PyQt5.QtGui import QPen, QBrush, QColor, QPixmap, QImage, QKeySequence
+from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QShortcut
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -22,14 +22,33 @@ from core.dataset.ped import PedAdapter
 from core.dataset.dota import DOTAAdapter
 from core.dataset.shanghaitech import ShanghaiTechAdapter
 from core.dataset.avenue import AvenueAdapter
-from core.eis.dt_select import select_dt_auto
-from core.eis.frame_select import select_frame_interval_auto
-from core.eis.anchors import generate_anchors, generate_anchors_by_frame, subsample_anchors, pad_anchors
+from core.eis.anchors import generate_anchors_by_frame
 from core.io.video import VideoLoader
 from core.io.export import export_annotations, validate_annotations, generate_statistics
 from core.io.import_txt import import_annotations
-from core.io.paths import get_video_path, get_annotation_path
+from core.io.instance_metadata import (
+    build_instance_metadata_payload,
+    export_instance_metadata,
+    import_instance_metadata,
+)
+from core.io.paths import get_video_path, get_annotation_path, get_instance_metadata_path
 from core.annotation.state import AnnotationState
+
+
+DATASET_ADAPTERS = {
+    "ucf-crime": (UCFCrimeAdapter, "ucf_crime", False),
+    "view360": (VIEW360Adapter, "view360", True),
+    "ped1": (PedAdapter, "ped1", True),
+    "ped2": (PedAdapter, "ped2", True),
+    "dota": (DOTAAdapter, "dota", True),
+    "shanghaitech": (ShanghaiTechAdapter, "shanghaitech", True),
+    "avenue": (AvenueAdapter, "avenue", True),
+}
+
+
+def natural_key(text):
+    """Natural sort key for Mac/Windows-like sorting"""
+    return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text)]
 
 
 class AnnotationListWidget(QListWidget):
@@ -321,7 +340,19 @@ class MainWindow(QMainWindow):
         self.anchors = []
         self.current_adapter = None
         self.current_video = None
+        self.current_video_max_frame = 0
         self.timeline_buttons = []  # Store timeline buttons for updating colors
+        self.active_note_entity = "actor0"
+        self.pending_note_dirty = False
+        self.pending_video_caption_dirty = False
+
+        self.note_save_timer = QTimer(self)
+        self.note_save_timer.setSingleShot(True)
+        self.note_save_timer.timeout.connect(self.flush_pending_entity_note)
+
+        self.video_caption_save_timer = QTimer(self)
+        self.video_caption_save_timer.setSingleShot(True)
+        self.video_caption_save_timer.timeout.connect(self.flush_pending_video_caption)
 
         self.init_ui()
         self.setup_shortcuts()
@@ -385,7 +416,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Dataset:"))
         self.dataset_combo = QComboBox()
         self.dataset_combo.addItem("-- Select Dataset --")
-        self.dataset_combo.addItems(["ucf-crime", "view360", "ped1", "ped2", "dota", "shanghaitech", "avenue"])
+        self.dataset_combo.addItems(list(DATASET_ADAPTERS.keys()))
         self.dataset_combo.currentTextChanged.connect(self.on_dataset_changed)
         layout.addWidget(self.dataset_combo)
 
@@ -412,7 +443,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Run Name:"))
         self.run_name_input = QLineEdit("default")
         layout.addWidget(self.run_name_input)
-        layout.addWidget(QLabel("Saves to: annotations/<run_name>/<video>.txt"))
+        layout.addWidget(QLabel("Saves to: annotations/<run_name>/<video>.txt + .instances.json"))
 
         # Import/Export buttons
         self.import_btn = QPushButton("Import Existing Annotation")
@@ -453,6 +484,20 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(QLabel(""))  # Small spacing
 
+        caption_label = QLabel("Video Caption (optional):")
+        caption_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(caption_label)
+
+        caption_hint = QLabel("Video-level summary saved in .instances.json")
+        caption_hint.setStyleSheet("color: gray; font-size: 10px; font-style: italic;")
+        layout.addWidget(caption_hint)
+
+        self.video_caption_input = QTextEdit()
+        self.video_caption_input.setMaximumHeight(80)
+        self.video_caption_input.setPlaceholderText("Enter caption for this video...")
+        self.video_caption_input.textChanged.connect(self.on_video_caption_changed)
+        layout.addWidget(self.video_caption_input)
+
         # Entity Notes section
         notes_label = QLabel("Entity Notes (optional):")
         notes_label.setStyleSheet("font-weight: bold;")
@@ -467,6 +512,78 @@ class MainWindow(QMainWindow):
         self.entity_notes_input.setPlaceholderText("Enter notes for this entity...")
         self.entity_notes_input.textChanged.connect(self.on_entity_note_changed)
         layout.addWidget(self.entity_notes_input)
+
+        timeline_meta_label = QLabel("Entity Timeline Metadata (JSON):")
+        timeline_meta_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(timeline_meta_label)
+
+        timeline_meta_hint = QLabel("Use current anchor buttons for frame-interval-safe annotation")
+        timeline_meta_hint.setStyleSheet("color: gray; font-size: 10px; font-style: italic;")
+        layout.addWidget(timeline_meta_hint)
+
+        enter_row = QHBoxLayout()
+        self.enter_enabled_check = QCheckBox("Enter")
+        self.enter_enabled_check.stateChanged.connect(self.on_timeline_controls_changed)
+        enter_row.addWidget(self.enter_enabled_check)
+        self.enter_frame_spin = QSpinBox()
+        self.enter_frame_spin.setMinimum(0)
+        self.enter_frame_spin.setMaximum(0)
+        self.enter_frame_spin.valueChanged.connect(self.on_timeline_controls_changed)
+        enter_row.addWidget(self.enter_frame_spin)
+        self.enter_set_current_btn = QPushButton("Use current")
+        self.enter_set_current_btn.clicked.connect(self.on_set_enter_current_anchor)
+        enter_row.addWidget(self.enter_set_current_btn)
+        layout.addLayout(enter_row)
+
+        exit_row = QHBoxLayout()
+        self.exit_enabled_check = QCheckBox("Exit")
+        self.exit_enabled_check.stateChanged.connect(self.on_timeline_controls_changed)
+        exit_row.addWidget(self.exit_enabled_check)
+        self.exit_frame_spin = QSpinBox()
+        self.exit_frame_spin.setMinimum(0)
+        self.exit_frame_spin.setMaximum(0)
+        self.exit_frame_spin.valueChanged.connect(self.on_timeline_controls_changed)
+        exit_row.addWidget(self.exit_frame_spin)
+        self.exit_set_current_btn = QPushButton("Use current")
+        self.exit_set_current_btn.clicked.connect(self.on_set_exit_current_anchor)
+        exit_row.addWidget(self.exit_set_current_btn)
+        layout.addLayout(exit_row)
+
+        layout.addWidget(QLabel("Missing Frames (supports ranges):"))
+        self.missing_frames_input = QLineEdit()
+        self.missing_frames_input.setPlaceholderText("e.g. 180-190, 210, 250-255")
+        self.missing_frames_input.editingFinished.connect(self.on_timeline_controls_changed)
+        layout.addWidget(self.missing_frames_input)
+
+        missing_range_row = QHBoxLayout()
+        self.missing_range_start_spin = QSpinBox()
+        self.missing_range_start_spin.setMinimum(0)
+        self.missing_range_start_spin.setMaximum(0)
+        missing_range_row.addWidget(self.missing_range_start_spin)
+        self.missing_range_end_spin = QSpinBox()
+        self.missing_range_end_spin.setMinimum(0)
+        self.missing_range_end_spin.setMaximum(0)
+        missing_range_row.addWidget(self.missing_range_end_spin)
+        self.add_missing_range_btn = QPushButton("Add range")
+        self.add_missing_range_btn.clicked.connect(self.on_add_missing_range)
+        missing_range_row.addWidget(self.add_missing_range_btn)
+        self.remove_missing_range_btn = QPushButton("Remove range")
+        self.remove_missing_range_btn.clicked.connect(self.on_remove_missing_range)
+        missing_range_row.addWidget(self.remove_missing_range_btn)
+        layout.addLayout(missing_range_row)
+
+        timeline_btn_row = QHBoxLayout()
+        self.toggle_missing_current_btn = QPushButton("Toggle current in missing")
+        self.toggle_missing_current_btn.clicked.connect(self.on_toggle_missing_current_anchor)
+        timeline_btn_row.addWidget(self.toggle_missing_current_btn)
+        self.clear_timeline_btn = QPushButton("Clear timeline")
+        self.clear_timeline_btn.clicked.connect(self.on_clear_entity_timeline)
+        timeline_btn_row.addWidget(self.clear_timeline_btn)
+        layout.addLayout(timeline_btn_row)
+
+        self.timeline_meta_summary_label = QLabel("Enter: -, Exit: -, Missing: 0")
+        self.timeline_meta_summary_label.setStyleSheet("color: #555; font-size: 10px;")
+        layout.addWidget(self.timeline_meta_summary_label)
 
         layout.addStretch()
 
@@ -696,50 +813,21 @@ class MainWindow(QMainWindow):
 
     def on_dataset_changed(self, dataset):
         """Dataset selection changed"""
+        self.flush_pending_entity_note()
+        self.flush_pending_video_caption()
+
         # Clear video combo when dataset changes
         self.video_combo.clear()
+        self.current_adapter = None
 
         # Skip if placeholder is selected
         if not dataset or dataset.startswith("--"):
             self.video_combo.addItem("-- Select Video --")
             return
 
-        if dataset == "ucf-crime":
-            self.current_adapter = UCFCrimeAdapter(
-                self.config['dataset']['ucf_crime']['annotation_file']
-            )
-
-        elif dataset == "view360":
-            self.current_adapter = VIEW360Adapter(
-                self.config['dataset']['view360']['annotation_file'],
-                self.config['dataset']['view360']['videos_dir']
-            )
-        elif dataset == "ped1":
-            self.current_adapter = PedAdapter(
-                self.config['dataset']['ped1']['annotation_file'],
-                self.config['dataset']['ped1']['videos_dir']
-            )
-        elif dataset == "ped2":
-            self.current_adapter = PedAdapter(
-                self.config['dataset']['ped2']['annotation_file'],
-                self.config['dataset']['ped2']['videos_dir']
-            )
-        elif dataset == "dota":
-            self.current_adapter = DOTAAdapter(
-                self.config['dataset']['dota']['annotation_file'],
-                self.config['dataset']['dota']['videos_dir']
-            )
-        elif dataset == "shanghaitech":
-            self.current_adapter = ShanghaiTechAdapter(
-                self.config['dataset']['shanghaitech']['annotation_file'],
-                self.config['dataset']['shanghaitech']['videos_dir']
-            )
-        elif dataset == "avenue":
-            self.current_adapter = AvenueAdapter(
-                self.config['dataset']['avenue']['annotation_file'],
-                self.config['dataset']['avenue']['videos_dir']
-            )
-        else:
+        self.current_adapter = self.create_dataset_adapter(dataset)
+        if self.current_adapter is None:
+            self.video_combo.addItem("-- Select Video --")
             return
 
         videos = self.current_adapter.get_videos()
@@ -781,11 +869,6 @@ class MainWindow(QMainWindow):
             
             QMessageBox.warning(self, "Dataset Validation", msg)
 
-        import re
-        def natural_key(text):
-            """Natural sort key for Mac/Windows-like sorting"""
-            return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text)]
-
         # Sort videos by display name using natural sort
         videos.sort(key=lambda v: natural_key(v.get('display_name', v['name'])))
 
@@ -797,6 +880,9 @@ class MainWindow(QMainWindow):
 
     def on_video_changed(self, video_display_name):
         """Video selection changed"""
+        self.flush_pending_entity_note()
+        self.flush_pending_video_caption()
+
         if not video_display_name or video_display_name.startswith("--"):
             return
 
@@ -817,6 +903,8 @@ class MainWindow(QMainWindow):
         if self.ann_state.current_video != video_id:
             self.ann_state.annotations.clear()
             self.ann_state.entity_notes.clear()
+            self.ann_state.video_caption = ""
+            self.ann_state.entity_timeline.clear()
             self.ann_state.history.clear()
             self.ann_state.history_idx = -1
             
@@ -859,7 +947,17 @@ class MainWindow(QMainWindow):
         info = self.video_loader.get_info()
 
         # Get max frame number (frame_count - 1, since frames are 0-indexed)
-        max_frame = info['frame_count'] - 1 if info['frame_count'] > 0 else None
+        if info['frame_count'] <= 0:
+            QMessageBox.critical(self, "Invalid Video", "Video has no readable frames")
+            return
+
+        max_frame = info['frame_count'] - 1
+        self.current_video_max_frame = max_frame
+
+        self.enter_frame_spin.setMaximum(max_frame)
+        self.exit_frame_spin.setMaximum(max_frame)
+        self.missing_range_start_spin.setMaximum(max_frame)
+        self.missing_range_end_spin.setMaximum(max_frame)
 
         # Generate anchors (FRAME-BASED)
         intervals = self.current_video['intervals']
@@ -868,6 +966,31 @@ class MainWindow(QMainWindow):
             return
 
         start_frame, end_frame = intervals[0]  # Frame numbers!
+
+        # Clamp frame range to actual video bounds
+        if end_frame > max_frame:
+            QMessageBox.warning(
+                self,
+                "Frame Range Mismatch",
+                f"⚠️ Annotation end frame ({end_frame}) exceeds video frame count!\n\n"
+                f"Video: {self.current_video['name']}\n"
+                f"Video frames: 0-{max_frame} ({max_frame + 1} total)\n"
+                f"Annotation range: {start_frame}-{end_frame}\n\n"
+                f"End frame will be clamped to {max_frame}.\n\n"
+                f"Please verify you are using the correct video file."
+            )
+            end_frame = max_frame
+
+        if start_frame > max_frame:
+            QMessageBox.critical(
+                self,
+                "Invalid Frame Range",
+                f"❌ Annotation start frame ({start_frame}) exceeds video frame count!\n\n"
+                f"Video: {self.current_video['name']}\n"
+                f"Video frames: 0-{max_frame}\n\n"
+                f"Cannot proceed with this video."
+            )
+            return
 
         # Determine frame interval
         interval_mode = self.frame_interval_combo.currentText()
@@ -919,6 +1042,17 @@ class MainWindow(QMainWindow):
 
         # Load first frame
         self.jump_to_anchor(0)
+        self.load_video_caption()
+        self.load_entity_timeline_controls()
+
+    def has_entity_annotation(self, frame, entity_id):
+        annotations = self.ann_state.get_annotations_for_frame(frame)
+        entity_data = annotations.get(entity_id, {})
+        return bool(
+            entity_data.get('bbox')
+            or entity_data.get('pos_points')
+            or entity_data.get('neg_points')
+        )
 
     def update_timeline_colors(self):
         """Update timeline button colors based on annotation status"""
@@ -926,14 +1060,45 @@ class MainWindow(QMainWindow):
             return
 
         current_idx = self.ann_state.current_anchor_idx
+        current_entity = self.get_selected_entity()
+        timeline = self.ann_state.get_entity_timeline(current_entity)
+        enter_frame = timeline.get('enter_frame')
+        exit_frame = timeline.get('exit_frame')
+        missing_frames = set(timeline.get('missing_frames', []))
 
         for i, (btn, anchor_frame) in enumerate(zip(self.timeline_buttons, self.anchors)):
-            annotations = self.ann_state.get_annotations_for_frame(anchor_frame)
-            has_annotations = bool(annotations)
+            has_annotations = self.has_entity_annotation(anchor_frame, current_entity)
             is_current = (i == current_idx)
+            is_missing = anchor_frame in missing_frames
+
+            marker_parts = []
+            if anchor_frame == enter_frame:
+                marker_parts.append('IN')
+            if anchor_frame == exit_frame:
+                marker_parts.append('OUT')
+            if is_missing:
+                marker_parts.append('MISS')
+            if marker_parts:
+                btn.setText(f"F{anchor_frame} {'/'.join(marker_parts)}")
+            else:
+                btn.setText(f"F{anchor_frame}")
 
             # Set style based on status
-            if is_current and has_annotations:
+            if is_current and is_missing:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #FFD6D6;
+                        border: 3px solid #4169E1;
+                        font-weight: bold;
+                    }
+                """)
+            elif is_missing:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #FFD6D6;
+                    }
+                """)
+            elif is_current and has_annotations:
                 # Current frame with annotations: green background + blue border
                 btn.setStyleSheet("""
                     QPushButton {
@@ -978,15 +1143,21 @@ class MainWindow(QMainWindow):
 
         # Calculate progress statistics
         total_anchors = len(self.anchors)
-        annotated_count = sum(1 for a in self.anchors if self.ann_state.get_annotations_for_frame(a))
+        current_entity = self.get_selected_entity()
+        annotated_count = sum(1 for a in self.anchors if self.has_entity_annotation(a, current_entity))
         progress_percent = int(annotated_count / total_anchors * 100) if total_anchors > 0 else 0
         current_annotations = self.ann_state.get_annotations_for_frame(anchor_frame)
-        current_ann_count = len(current_annotations)
+        current_entity_data = current_annotations.get(current_entity, {})
+        current_ann_count = (
+            int(bool(current_entity_data.get('bbox')))
+            + len(current_entity_data.get('pos_points', []))
+            + len(current_entity_data.get('neg_points', []))
+        )
 
         # Update label with progress stats (FRAME-BASED)
         self.current_frame_label.setText(
             f"Frame: {anchor_frame} ({idx + 1}/{total_anchors}) | "
-            f"📊 {annotated_count}/{total_anchors} ({progress_percent}%) | "
+            f"📊 {annotated_count}/{total_anchors} ({progress_percent}%) for {current_entity} | "
             f"📝 {current_ann_count}"
         )
 
@@ -1057,6 +1228,8 @@ class MainWindow(QMainWindow):
 
     def on_entity_changed(self):
         """Entity selection changed"""
+        self.flush_pending_entity_note()
+
         entity = self.get_selected_entity()
         self.entity_label.setText(f"→ {entity}")
 
@@ -1068,11 +1241,38 @@ class MainWindow(QMainWindow):
 
         # Load entity note
         self.load_entity_note()
+        self.load_entity_timeline_controls()
+        self.update_timeline_colors()
+
+    def load_video_caption(self):
+        self.video_caption_save_timer.stop()
+        caption = self.ann_state.get_video_caption()
+        self.video_caption_input.blockSignals(True)
+        self.video_caption_input.setPlainText(caption)
+        self.video_caption_input.blockSignals(False)
+        self.pending_video_caption_dirty = False
+
+    def on_video_caption_changed(self):
+        if not self.current_video:
+            return
+        self.pending_video_caption_dirty = True
+        self.video_caption_save_timer.start(400)
+
+    def flush_pending_video_caption(self):
+        if not self.pending_video_caption_dirty:
+            return
+
+        caption = self.video_caption_input.toPlainText()
+        self.ann_state.set_video_caption(caption)
+        self.pending_video_caption_dirty = False
 
     def load_entity_note(self):
         """Load note for current entity"""
+        self.note_save_timer.stop()
         entity = self.get_selected_entity()
         note = self.ann_state.get_entity_note(entity)
+        self.active_note_entity = entity
+        self.pending_note_dirty = False
 
         # Block signals while updating to avoid triggering on_entity_note_changed
         self.entity_notes_input.blockSignals(True)
@@ -1081,9 +1281,205 @@ class MainWindow(QMainWindow):
 
     def on_entity_note_changed(self):
         """Entity note text changed"""
-        entity = self.get_selected_entity()
+        self.pending_note_dirty = True
+        self.note_save_timer.start(400)
+
+    def flush_pending_entity_note(self):
+        """Persist pending entity note edits into annotation state"""
+        if not self.pending_note_dirty:
+            return
+
+        if not self.active_note_entity:
+            self.pending_note_dirty = False
+            return
+
         note = self.entity_notes_input.toPlainText()
-        self.ann_state.set_entity_note(entity, note)
+        self.ann_state.set_entity_note(self.active_note_entity, note)
+        self.pending_note_dirty = False
+
+    def parse_missing_frames_text(self, text):
+        missing_frames = set()
+        max_frame = self.current_video_max_frame
+
+        for chunk in text.split(','):
+            token = chunk.strip()
+            if not token:
+                continue
+
+            if '-' in token:
+                parts = token.split('-', 1)
+                if len(parts) != 2:
+                    continue
+                try:
+                    start = int(parts[0].strip())
+                    end = int(parts[1].strip())
+                except ValueError:
+                    continue
+                if start > end:
+                    start, end = end, start
+                for frame in range(start, end + 1):
+                    if 0 <= frame <= max_frame:
+                        missing_frames.add(frame)
+            else:
+                try:
+                    frame = int(token)
+                except ValueError:
+                    continue
+                if 0 <= frame <= max_frame:
+                    missing_frames.add(frame)
+
+        return sorted(missing_frames)
+
+    def format_missing_frames_text(self, frames):
+        return ', '.join(str(frame) for frame in sorted(frames))
+
+    def load_entity_timeline_controls(self):
+        entity = self.get_selected_entity()
+        timeline = self.ann_state.get_entity_timeline(entity)
+
+        enter_frame = timeline.get('enter_frame')
+        exit_frame = timeline.get('exit_frame')
+        missing_frames = timeline.get('missing_frames', [])
+
+        self.enter_enabled_check.blockSignals(True)
+        self.enter_frame_spin.blockSignals(True)
+        self.exit_enabled_check.blockSignals(True)
+        self.exit_frame_spin.blockSignals(True)
+        self.missing_frames_input.blockSignals(True)
+
+        self.enter_enabled_check.setChecked(enter_frame is not None)
+        self.exit_enabled_check.setChecked(exit_frame is not None)
+
+        if enter_frame is not None:
+            self.enter_frame_spin.setValue(max(0, min(enter_frame, self.current_video_max_frame)))
+        if exit_frame is not None:
+            self.exit_frame_spin.setValue(max(0, min(exit_frame, self.current_video_max_frame)))
+
+        self.missing_frames_input.setText(self.format_missing_frames_text(missing_frames))
+
+        self.enter_enabled_check.blockSignals(False)
+        self.enter_frame_spin.blockSignals(False)
+        self.exit_enabled_check.blockSignals(False)
+        self.exit_frame_spin.blockSignals(False)
+        self.missing_frames_input.blockSignals(False)
+
+        self.update_timeline_meta_summary()
+
+    def update_timeline_meta_summary(self):
+        entity = self.get_selected_entity()
+        timeline = self.ann_state.get_entity_timeline(entity)
+
+        enter_text = '-' if timeline.get('enter_frame') is None else f"F{timeline['enter_frame']}"
+        exit_text = '-' if timeline.get('exit_frame') is None else f"F{timeline['exit_frame']}"
+        missing_count = len(timeline.get('missing_frames', []))
+
+        self.timeline_meta_summary_label.setText(
+            f"Enter: {enter_text}, Exit: {exit_text}, Missing: {missing_count}"
+        )
+
+    def on_timeline_controls_changed(self):
+        if not self.current_video:
+            return
+
+        entity = self.get_selected_entity()
+        enter_frame = self.enter_frame_spin.value() if self.enter_enabled_check.isChecked() else None
+        exit_frame = self.exit_frame_spin.value() if self.exit_enabled_check.isChecked() else None
+        missing_frames = self.parse_missing_frames_text(self.missing_frames_input.text())
+
+        if enter_frame is not None:
+            enter_frame = max(0, min(enter_frame, self.current_video_max_frame))
+        if exit_frame is not None:
+            exit_frame = max(0, min(exit_frame, self.current_video_max_frame))
+
+        if enter_frame is not None and exit_frame is not None and enter_frame > exit_frame:
+            enter_frame, exit_frame = exit_frame, enter_frame
+
+        self.ann_state.set_entity_timeline(entity, enter_frame, exit_frame, missing_frames)
+        self.load_entity_timeline_controls()
+        self.update_timeline_colors()
+
+    def on_set_enter_current_anchor(self):
+        if not self.anchors:
+            return
+        current_frame = self.anchors[self.ann_state.current_anchor_idx]
+        self.enter_enabled_check.setChecked(True)
+        self.enter_frame_spin.setValue(current_frame)
+        self.on_timeline_controls_changed()
+
+    def on_set_exit_current_anchor(self):
+        if not self.anchors:
+            return
+        current_frame = self.anchors[self.ann_state.current_anchor_idx]
+        self.exit_enabled_check.setChecked(True)
+        self.exit_frame_spin.setValue(current_frame)
+        self.on_timeline_controls_changed()
+
+    def on_toggle_missing_current_anchor(self):
+        if not self.anchors or not self.current_video:
+            return
+
+        entity = self.get_selected_entity()
+        current_frame = self.anchors[self.ann_state.current_anchor_idx]
+        timeline = self.ann_state.get_entity_timeline(entity)
+        missing_frames = set(timeline.get('missing_frames', []))
+
+        if current_frame in missing_frames:
+            missing_frames.remove(current_frame)
+        else:
+            missing_frames.add(current_frame)
+
+        self.ann_state.set_entity_timeline(
+            entity,
+            timeline.get('enter_frame'),
+            timeline.get('exit_frame'),
+            sorted(missing_frames)
+        )
+        self.load_entity_timeline_controls()
+        self.update_timeline_colors()
+
+    def on_clear_entity_timeline(self):
+        if not self.current_video:
+            return
+        entity = self.get_selected_entity()
+        self.ann_state.set_entity_timeline(entity, None, None, [])
+        self.load_entity_timeline_controls()
+        self.update_timeline_colors()
+
+    def on_add_missing_range(self):
+        self.update_missing_frames_with_range(True)
+
+    def on_remove_missing_range(self):
+        self.update_missing_frames_with_range(False)
+
+    def update_missing_frames_with_range(self, should_add):
+        if not self.current_video:
+            return
+
+        start = self.missing_range_start_spin.value()
+        end = self.missing_range_end_spin.value()
+        if start > end:
+            start, end = end, start
+
+        entity = self.get_selected_entity()
+        timeline = self.ann_state.get_entity_timeline(entity)
+        missing_frames = set(timeline.get('missing_frames', []))
+
+        for frame in range(start, end + 1):
+            if frame < 0 or frame > self.current_video_max_frame:
+                continue
+            if should_add:
+                missing_frames.add(frame)
+            else:
+                missing_frames.discard(frame)
+
+        self.ann_state.set_entity_timeline(
+            entity,
+            timeline.get('enter_frame'),
+            timeline.get('exit_frame'),
+            sorted(missing_frames)
+        )
+        self.load_entity_timeline_controls()
+        self.update_timeline_colors()
 
     def on_tool_changed(self):
         """Tool selection changed"""
@@ -1120,17 +1516,27 @@ class MainWindow(QMainWindow):
 
     def on_undo(self):
         """Undo last action"""
+        self.flush_pending_entity_note()
+        self.flush_pending_video_caption()
         if self.ann_state.undo():
+            self.load_video_caption()
             self.refresh_canvas()
             self.update_annotations_list()
             self.update_timeline_colors()
+            self.load_entity_note()
+            self.load_entity_timeline_controls()
 
     def on_redo(self):
         """Redo last undone action"""
+        self.flush_pending_entity_note()
+        self.flush_pending_video_caption()
         if self.ann_state.redo():
+            self.load_video_caption()
             self.refresh_canvas()
             self.update_annotations_list()
             self.update_timeline_colors()
+            self.load_entity_note()
+            self.load_entity_timeline_controls()
 
     def on_carry_forward(self):
         """Carry forward bbox from previous frame"""
@@ -1205,6 +1611,8 @@ class MainWindow(QMainWindow):
 
     def on_import(self):
         """Import existing annotations"""
+        self.flush_pending_entity_note()
+        self.flush_pending_video_caption()
         run_name = self.run_name_input.text()
 
         if not self.current_video:
@@ -1232,19 +1640,67 @@ class MainWindow(QMainWindow):
                 self.ann_state.video_height
             )
             self.ann_state.import_from_list(imported)
+
+            metadata_path = get_instance_metadata_path(import_path)
+            metadata_loaded = False
+            if os.path.exists(metadata_path):
+                try:
+                    metadata_data = import_instance_metadata(metadata_path)
+                    imported_caption_value = metadata_data.get('video_caption', "")
+                    if isinstance(imported_caption_value, str):
+                        imported_caption = imported_caption_value
+                    elif imported_caption_value:
+                        imported_caption = str(imported_caption_value)
+                    else:
+                        imported_caption = ""
+                    self.ann_state.import_instance_metadata(
+                        metadata_data.get('entity_notes', {}),
+                        metadata_data.get('entity_timeline', {}),
+                        imported_caption
+                    )
+                    metadata_loaded = True
+                except Exception as metadata_error:
+                    QMessageBox.warning(
+                        self,
+                        "Metadata Import Warning",
+                        f"Main annotations were imported, but metadata import failed: {metadata_error}"
+                    )
+
             self.show_status(f"Imported {len(imported)} annotations ✓", 3000)
             self.refresh_canvas()
             self.update_annotations_list()
             self.update_timeline_colors()
+            self.load_video_caption()
+            self.load_entity_note()
+            self.load_entity_timeline_controls()
+
+            if metadata_loaded:
+                self.show_status(
+                    f"Imported {len(imported)} annotations + instance metadata ✓",
+                    3500
+                )
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Import failed: {e}")
 
     def on_export(self):
         """Export current video annotations"""
-        annotations = self.ann_state.export_to_list()
+        self.flush_pending_entity_note()
+        self.flush_pending_video_caption()
 
-        if not annotations:
-            QMessageBox.warning(self, "Warning", "No annotations to export for this video")
+        if not self.current_video:
+            QMessageBox.warning(self, "Warning", "Please select a video first")
+            return
+
+        annotations = self.ann_state.export_to_list(include_text=False)
+        metadata_state = self.ann_state.export_instance_metadata()
+        has_metadata = bool(
+            metadata_state.get('video_caption')
+            or metadata_state.get('entity_notes')
+            or metadata_state.get('entity_timeline')
+        )
+
+        if not annotations and not has_metadata:
+            QMessageBox.warning(self, "Warning", "No annotations or metadata to export for this video")
             return
 
         # Validate
@@ -1275,6 +1731,21 @@ class MainWindow(QMainWindow):
                 output_path
             )
 
+            metadata_path = get_instance_metadata_path(output_path)
+            export_caption_value = metadata_state.get('video_caption', "")
+            if isinstance(export_caption_value, str):
+                export_caption = export_caption_value
+            elif export_caption_value:
+                export_caption = str(export_caption_value)
+            else:
+                export_caption = ""
+            metadata_payload = build_instance_metadata_payload(
+                metadata_state.get('entity_notes', {}),
+                metadata_state.get('entity_timeline', {}),
+                export_caption
+            )
+            export_instance_metadata(metadata_payload, metadata_path)
+
             # Generate stats
             stats = generate_statistics(annotations)
 
@@ -1282,16 +1753,34 @@ class MainWindow(QMainWindow):
             filename = os.path.basename(output_path)
 
             # Show brief status message
-            self.show_status(f"Exported {stats['total_annotations']} annotations to {filename} ✓", 3000)
+            self.show_status(
+                f"Exported {stats['total_annotations']} annotations + metadata to {filename} ✓",
+                3000
+            )
 
             # Print stats to console for reference
             print(f"\n=== Export Success ===")
             print(f"File: {output_path}")
             print(f"Total frames: {stats['total_frames']}")
             print(f"Total annotations: {stats['total_annotations']}")
-            print(f"Entities: {', '.join(stats['entities'])}")
-            for entity_id, counts in stats['per_entity'].items():
-                print(f"  {entity_id}: bbox={counts['bbox']}, pos={counts['pos_point']}, neg={counts['neg_point']}")
+            print(f"Metadata file: {metadata_path}")
+
+            entities = stats.get('entities', [])
+            if isinstance(entities, list):
+                entity_names = [str(entity_id) for entity_id in entities]
+            else:
+                entity_names = []
+            print(f"Entities: {', '.join(entity_names)}")
+
+            per_entity = stats.get('per_entity', {})
+            if isinstance(per_entity, dict):
+                for entity_id, counts in per_entity.items():
+                    if not isinstance(counts, dict):
+                        continue
+                    bbox_count = counts.get('bbox', 0)
+                    pos_count = counts.get('pos_point', 0)
+                    neg_count = counts.get('neg_point', 0)
+                    print(f"  {entity_id}: bbox={bbox_count}, pos={pos_count}, neg={neg_count}")
             print("=====================\n")
 
         except Exception as e:
@@ -1392,9 +1881,25 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Clean up on close"""
+        self.flush_pending_entity_note()
+        self.flush_pending_video_caption()
         if self.video_loader:
             self.video_loader.release()
         event.accept()
+
+    def create_dataset_adapter(self, dataset):
+        """Create dataset adapter instance for selected dataset"""
+        adapter_info = DATASET_ADAPTERS.get(dataset)
+        if not adapter_info:
+            return None
+
+        adapter_cls, config_key, requires_videos_dir = adapter_info
+        dataset_config = self.config['dataset'][config_key]
+
+        adapter_args = [dataset_config['annotation_file']]
+        if requires_videos_dir:
+            adapter_args.append(dataset_config['videos_dir'])
+        return adapter_cls(*adapter_args)
 
 
 def main():

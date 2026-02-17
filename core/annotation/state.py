@@ -15,9 +15,62 @@ class AnnotationState:
         # entity notes: {entity_id: "text note"}
         self.entity_notes = {}
 
+        self.video_caption = ""
+
+        self.entity_timeline = {}
+
         # undo/redo
         self.history = []
         self.history_idx = -1
+
+    def _empty_entity_data(self):
+        return {
+            'bbox': None,
+            'pos_points': [],
+            'neg_points': []
+        }
+
+    def _ensure_entity(self, frame, entity_id):
+        if frame not in self.annotations:
+            self.annotations[frame] = {}
+        if entity_id not in self.annotations[frame]:
+            self.annotations[frame][entity_id] = self._empty_entity_data()
+
+    def _is_entity_empty(self, entity_data):
+        return (
+            entity_data.get('bbox') is None
+            and not entity_data.get('pos_points')
+            and not entity_data.get('neg_points')
+        )
+
+    def _build_snapshot(self):
+        return {
+            'annotations': copy.deepcopy(self.annotations),
+            'entity_notes': copy.deepcopy(self.entity_notes),
+            'video_caption': self.video_caption,
+            'entity_timeline': copy.deepcopy(self.entity_timeline)
+        }
+
+    def _restore_snapshot(self, snapshot):
+        self.annotations = copy.deepcopy(snapshot.get('annotations', {}))
+        self.entity_notes = copy.deepcopy(snapshot.get('entity_notes', {}))
+        self.video_caption = str(snapshot.get('video_caption', ""))
+        self.entity_timeline = copy.deepcopy(snapshot.get('entity_timeline', {}))
+
+    def _empty_timeline_data(self):
+        return {
+            'enter_frame': None,
+            'exit_frame': None,
+            'missing_frames': []
+        }
+
+    def _normalize_missing_frames(self, missing_frames):
+        normalized = []
+        for frame in missing_frames or []:
+            frame_int = int(frame)
+            if frame_int >= 0:
+                normalized.append(frame_int)
+        return sorted(set(normalized))
 
     def set_video(self, video_name, anchors, dt, width, height):
         self.current_video = video_name
@@ -29,30 +82,14 @@ class AnnotationState:
 
     def add_bbox(self, frame, entity_id, coords):
         """Add or update bbox for entity at frame"""
-        if frame not in self.annotations:
-            self.annotations[frame] = {}
-
-        if entity_id not in self.annotations[frame]:
-            self.annotations[frame][entity_id] = {
-                'bbox': None,
-                'pos_points': [],
-                'neg_points': []
-            }
+        self._ensure_entity(frame, entity_id)
 
         self.annotations[frame][entity_id]['bbox'] = coords
         self.save_history()
 
     def add_point(self, frame, entity_id, coords, point_type):
         """Add pos_point or neg_point"""
-        if frame not in self.annotations:
-            self.annotations[frame] = {}
-
-        if entity_id not in self.annotations[frame]:
-            self.annotations[frame][entity_id] = {
-                'bbox': None,
-                'pos_points': [],
-                'neg_points': []
-            }
+        self._ensure_entity(frame, entity_id)
 
         if point_type == 'pos_point':
             self.annotations[frame][entity_id]['pos_points'].append(coords)
@@ -93,6 +130,12 @@ class AnnotationState:
         elif ann_type == 'neg_point':
             self.annotations[frame][entity_id]['neg_points'] = []
 
+        if entity_id in self.annotations.get(frame, {}):
+            if self._is_entity_empty(self.annotations[frame][entity_id]):
+                del self.annotations[frame][entity_id]
+        if frame in self.annotations and not self.annotations[frame]:
+            del self.annotations[frame]
+
         self.save_history()
 
     def save_history(self):
@@ -101,8 +144,11 @@ class AnnotationState:
         if self.history_idx < len(self.history) - 1:
             self.history = self.history[:self.history_idx + 1]
 
-        # deep copy current annotations
-        snapshot = copy.deepcopy(self.annotations)
+        snapshot = self._build_snapshot()
+
+        if self.history and self.history[self.history_idx] == snapshot:
+            return
+
         self.history.append(snapshot)
         self.history_idx += 1
 
@@ -115,7 +161,7 @@ class AnnotationState:
         """Undo last action"""
         if self.history_idx > 0:
             self.history_idx -= 1
-            self.annotations = copy.deepcopy(self.history[self.history_idx])
+            self._restore_snapshot(self.history[self.history_idx])
             return True
         return False
 
@@ -123,7 +169,7 @@ class AnnotationState:
         """Redo last undone action"""
         if self.history_idx < len(self.history) - 1:
             self.history_idx += 1
-            self.annotations = copy.deepcopy(self.history[self.history_idx])
+            self._restore_snapshot(self.history[self.history_idx])
             return True
         return False
 
@@ -131,6 +177,8 @@ class AnnotationState:
         """Load annotations from import"""
         self.annotations = {}
         self.entity_notes = {}
+        self.video_caption = ""
+        self.entity_timeline = {}
 
         for ann in annotations:
             frame = ann['frame']
@@ -147,11 +195,7 @@ class AnnotationState:
                 self.annotations[frame] = {}
 
             if entity_id not in self.annotations[frame]:
-                self.annotations[frame][entity_id] = {
-                    'bbox': None,
-                    'pos_points': [],
-                    'neg_points': []
-                }
+                self.annotations[frame][entity_id] = self._empty_entity_data()
 
             if ann_type == 'bbox':
                 self.annotations[frame][entity_id]['bbox'] = coords
@@ -162,18 +206,18 @@ class AnnotationState:
 
         self.save_history()
 
-    def export_to_list(self):
+    def export_to_list(self, include_text=True):
         """Convert to export format"""
         result = []
 
-        # Export entity notes as frame -1 with type 'text'
-        for entity_id in sorted(self.entity_notes.keys()):
-            result.append({
-                'frame': -1,
-                'id': entity_id,
-                'type': 'text',
-                'coords': [self.entity_notes[entity_id]]  # coords as list with text
-            })
+        if include_text:
+            for entity_id in sorted(self.entity_notes.keys()):
+                result.append({
+                    'frame': -1,
+                    'id': entity_id,
+                    'type': 'text',
+                    'coords': [self.entity_notes[entity_id]]  # coords as list with text
+                })
 
         # Export regular annotations
         for frame in sorted(self.annotations.keys()):
@@ -227,3 +271,107 @@ class AnnotationState:
     def get_entity_note(self, entity_id):
         """Get text note for an entity"""
         return self.entity_notes.get(entity_id, "")
+
+    def set_video_caption(self, caption):
+        caption_text = ""
+        if caption and str(caption).strip():
+            caption_text = str(caption).strip()
+        self.video_caption = caption_text
+        self.save_history()
+
+    def get_video_caption(self):
+        return self.video_caption
+
+    def set_entity_timeline(
+        self,
+        entity_id,
+        enter_frame,
+        exit_frame,
+        missing_frames
+    ):
+        timeline = copy.deepcopy(self.entity_timeline.get(entity_id, self._empty_timeline_data()))
+        timeline['enter_frame'] = None if enter_frame is None else int(enter_frame)
+        timeline['exit_frame'] = None if exit_frame is None else int(exit_frame)
+        timeline['missing_frames'] = self._normalize_missing_frames(missing_frames)
+
+        if (
+            timeline.get('enter_frame') is None
+            and timeline.get('exit_frame') is None
+            and not timeline.get('missing_frames')
+        ):
+            if entity_id in self.entity_timeline:
+                del self.entity_timeline[entity_id]
+        else:
+            self.entity_timeline[entity_id] = timeline
+
+        self.save_history()
+
+    def get_entity_timeline(self, entity_id):
+        timeline = copy.deepcopy(self.entity_timeline.get(entity_id, self._empty_timeline_data()))
+        timeline['missing_frames'] = self._normalize_missing_frames(timeline.get('missing_frames', []))
+        return timeline
+
+    def import_instance_metadata(self, entity_notes, entity_timeline, video_caption=""):
+        caption_text = ""
+        if video_caption and str(video_caption).strip():
+            caption_text = str(video_caption).strip()
+        self.video_caption = caption_text
+
+        for entity_id, note in (entity_notes or {}).items():
+            if note and str(note).strip():
+                self.entity_notes[entity_id] = str(note).strip()
+
+        for entity_id, timeline in (entity_timeline or {}).items():
+            enter_frame = timeline.get('enter_frame')
+            exit_frame = timeline.get('exit_frame')
+            missing_frames = self._normalize_missing_frames(timeline.get('missing_frames', []))
+
+            if enter_frame is not None:
+                enter_frame = int(enter_frame)
+            if exit_frame is not None:
+                exit_frame = int(exit_frame)
+
+            if enter_frame is None and exit_frame is None and not missing_frames:
+                continue
+
+            self.entity_timeline[entity_id] = {
+                'enter_frame': enter_frame,
+                'exit_frame': exit_frame,
+                'missing_frames': missing_frames,
+            }
+
+        self.save_history()
+
+    def export_instance_metadata(self):
+        notes = {}
+        timeline_map = {}
+
+        for entity_id in sorted(self.entity_notes.keys()):
+            note = self.entity_notes[entity_id]
+            if note and str(note).strip():
+                notes[entity_id] = str(note).strip()
+
+        for entity_id in sorted(self.entity_timeline.keys()):
+            timeline = self.get_entity_timeline(entity_id)
+            enter_frame = timeline.get('enter_frame')
+            exit_frame = timeline.get('exit_frame')
+            missing_frames = timeline.get('missing_frames', [])
+            if enter_frame is None and exit_frame is None and not missing_frames:
+                continue
+            timeline_map[entity_id] = {
+                'enter_frame': enter_frame,
+                'exit_frame': exit_frame,
+                'missing_frames': missing_frames,
+            }
+
+        return {
+            'video_caption': self.video_caption,
+            'entity_notes': notes,
+            'entity_timeline': timeline_map,
+        }
+
+    def get_all_entity_ids(self):
+        entities = set(self.get_active_entities())
+        entities.update(self.entity_notes.keys())
+        entities.update(self.entity_timeline.keys())
+        return sorted(entities)

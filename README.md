@@ -5,7 +5,8 @@ Annotation tool for anomaly detection datasets using Equal-Interval Seeding (EIS
 ## Features
 
 - Multi-entity annotation (actor, subject, related)
-- Entity notes support (optional text descriptions)
+- Per-instance metadata support (text, enter frame, exit frame, missing frames)
+- Optional video-level caption in sidecar JSON
 - Undo/Redo history
 - Import/Resume from existing annotations
 - Validation on export
@@ -28,7 +29,10 @@ python app/main.py
 2. Set run name (e.g., "v1" or "john_review")
 3. Select entity (role + ID) and tool (bbox/pos_point/neg_point)
 4. Draw annotations on frames
-5. Optionally add text notes for entities
+5. Set per-instance timeline metadata in the left panel:
+   - Enter frame / Exit frame (or use current anchor)
+   - Missing frames with list or ranges (e.g., `180-190,210`) or toggle current anchor
+   - Bulk add/remove missing ranges with start/end controls
 6. Navigate with A/D keys or timeline buttons
 7. Export when done (Ctrl+S or button)
 
@@ -54,10 +58,22 @@ Other:
 
 ## Output Format
 
-Annotations are saved as text files with relative coordinates [0,1]:
+Annotations are saved as two files:
+
+1) Prompt geometry TXT (`<video>.txt`)
+
+- Relative coordinates in [0,1]
+- Contains prompt rows only: `bbox`, `pos_point`, `neg_point`
+
+2) Instance metadata sidecar JSON (`<video>.instances.json`)
+
+- Optional video caption
+- Per-instance text note
+- Per-instance `enter_frame`, `exit_frame`, `missing_frames`
+
+Prompt TXT example:
 
 ```
--1, actor0, text, running away from explosion
 60, actor0, bbox, 0.512300, 0.338900, 0.080000, 0.210000
 60, actor0, pos_point, 0.560000, 0.410000
 70, actor0, bbox, 0.530000, 0.345000, 0.078000, 0.205000
@@ -65,7 +81,28 @@ Annotations are saved as text files with relative coordinates [0,1]:
 
 Format: `frame, entity_id, type, coordinates...`
 
-Entity notes are stored as frame -1 with type 'text'.
+Instance metadata JSON example:
+
+```json
+{
+  "schema_version": "1.0",
+  "frame_indexing": "0-based",
+  "video_caption": "Fight escalates near the center and disperses",
+  "instances": {
+    "actor0": {
+      "text": "running away from explosion",
+      "enter_frame": 60,
+      "exit_frame": 140,
+      "missing_frames": [95, 96]
+    }
+  }
+}
+```
+
+Backward compatibility:
+
+- Import still accepts legacy TXT rows with `frame=-1, type=text`
+- New export writes text/temporal metadata into `*.instances.json`
 
 ## Configuration
 

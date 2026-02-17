@@ -40,7 +40,10 @@ class UCFCrimeAdapter:
                             i += 2
                             continue
 
-                        # Use frame numbers directly (no FPS conversion!)
+                        # UCF-Crime uses 1-indexed frames, convert to 0-indexed
+                        start_frame = max(0, start_frame - 1)
+                        end_frame = max(0, end_frame - 1)
+
                         intervals.append((start_frame, end_frame))
                     except (ValueError, IndexError):
                         # Skip invalid entries

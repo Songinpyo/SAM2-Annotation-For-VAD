@@ -19,3 +19,8 @@ def get_annotation_path(output_dir, run_name, video_name, interval_idx=None):
     os.makedirs(output_subdir, exist_ok=True)
 
     return os.path.join(output_subdir, f"{video_name}.txt")
+
+
+def get_instance_metadata_path(annotation_path):
+    base, _ = os.path.splitext(annotation_path)
+    return f"{base}.instances.json"

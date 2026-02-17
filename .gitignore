@@ -1,4 +1,11 @@
+.gitignore
+code_map.md
+plan.md
+TRACKING_AND_SAM2_METADATA_CONTRACT.md
+.agent/
+
 # Python
+
 __pycache__/
 *.py[cod]
 *$py.class
@@ -28,3 +35,10 @@ Thumbs.db
 
 # Data (large files)
 data/*/videos/*.mp4
+data/**/*.tif
+data/**/*.bmp
+data/**/*.m
+data/**/*.m~
+data/shanghaitech/test_frame_mask
+
+video_predictor_example.ipynb
