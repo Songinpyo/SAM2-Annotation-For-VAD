@@ -6,10 +6,10 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QComboBox, QSlider, QSpinBox, QRadioButton,
     QButtonGroup, QScrollArea, QSplitter, QMessageBox, QLineEdit,
     QCheckBox,
-    QGroupBox, QListWidget, QListWidgetItem, QTextEdit
+    QGroupBox, QListWidget, QListWidgetItem, QTextEdit, QGridLayout, QSizePolicy, QFrame
 )
 from PyQt5.QtCore import Qt, QRectF, QPointF, QTimer, pyqtSignal
-from PyQt5.QtGui import QPen, QBrush, QColor, QPixmap, QImage, QKeySequence
+from PyQt5.QtGui import QPen, QBrush, QColor, QPixmap, QImage, QKeySequence, QPainter
 from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QShortcut
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -83,6 +83,11 @@ class CanvasViewer(QGraphicsView):
         self.start_pos = None
         self.current_rect = None
         self.current_point = None
+        self.last_point_tool = None
+        self.smart_click_mode = False
+        self.smart_drag_threshold = 4
+        self.smart_pos_color = QColor('#00FF00')
+        self.smart_neg_color = QColor('#FF0000')
 
         self.scale_x = 1.0
         self.scale_y = 1.0
@@ -189,6 +194,13 @@ class CanvasViewer(QGraphicsView):
         self.drawing_mode = mode
         self.stroke_color = QColor(color_str)
 
+    def set_smart_click_mode(self, enabled):
+        self.smart_click_mode = bool(enabled)
+
+    def set_smart_point_colors(self, pos_color_str, neg_color_str):
+        self.smart_pos_color = QColor(pos_color_str)
+        self.smart_neg_color = QColor(neg_color_str)
+
     def clamp_to_image(self, pos):
         """Clamp position to image boundaries"""
         if not self.pixmap_item:
@@ -200,27 +212,50 @@ class CanvasViewer(QGraphicsView):
         return QPointF(x, y)
 
     def mousePressEvent(self, event):
+        if self.pixmap_item and self.smart_click_mode:
+            pos = self.mapToScene(event.pos())
+            pos = self.clamp_to_image(pos)
+
+            if event.button() == Qt.RightButton:
+                self.current_rect = None
+                self.start_pos = None
+                self.last_point_tool = 'neg_point'
+                r = 5
+                self.current_point = self.scene.addEllipse(
+                    pos.x() - r, pos.y() - r, 2 * r, 2 * r,
+                    QPen(self.smart_neg_color),
+                    QBrush(self.smart_neg_color)
+                )
+                self.drawing_completed.emit()
+                event.accept()
+                return
+
+            if event.button() == Qt.LeftButton:
+                self.current_point = None
+                self.current_rect = None
+                self.start_pos = pos
+                self.last_point_tool = None
+                event.accept()
+                return
+
         if event.button() == Qt.LeftButton and self.pixmap_item:
             pos = self.mapToScene(event.pos())
-            # Clamp to image boundaries
             pos = self.clamp_to_image(pos)
             self.start_pos = pos
 
             if self.drawing_mode == 'bbox':
-                # Clear any previous point
                 self.current_point = None
-                # Start drawing rectangle
+                self.last_point_tool = None
                 self.current_rect = self.scene.addRect(
                     pos.x(), pos.y(), 0, 0,
                     QPen(self.stroke_color, 3)
                 )
             else:
-                # Clear any previous rect
                 self.current_rect = None
-                # Draw point
+                self.last_point_tool = self.drawing_mode
                 r = 5
                 self.current_point = self.scene.addEllipse(
-                    pos.x() - r, pos.y() - r, 2*r, 2*r,
+                    pos.x() - r, pos.y() - r, 2 * r, 2 * r,
                     QPen(self.stroke_color),
                     QBrush(self.stroke_color)
                 )
@@ -228,6 +263,21 @@ class CanvasViewer(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self.smart_click_mode and self.start_pos and self.pixmap_item:
+            pos = self.mapToScene(event.pos())
+            pos = self.clamp_to_image(pos)
+            dx = pos.x() - self.start_pos.x()
+            dy = pos.y() - self.start_pos.y()
+            moved = (dx * dx + dy * dy) ** 0.5
+            if moved >= self.smart_drag_threshold:
+                if self.current_rect is None:
+                    self.current_rect = self.scene.addRect(
+                        self.start_pos.x(), self.start_pos.y(), 0, 0,
+                        QPen(self.stroke_color, 3)
+                    )
+                rect = QRectF(self.start_pos, pos).normalized()
+                self.current_rect.setRect(rect)
+
         if self.start_pos and self.drawing_mode == 'bbox' and self.current_rect:
             pos = self.mapToScene(event.pos())
             # Clamp to image boundaries
@@ -250,6 +300,23 @@ class CanvasViewer(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self.smart_click_mode and self.pixmap_item and event.button() == Qt.LeftButton:
+            pos = self.mapToScene(event.pos())
+            pos = self.clamp_to_image(pos)
+            if self.current_rect is None:
+                r = 5
+                self.last_point_tool = 'pos_point'
+                self.current_point = self.scene.addEllipse(
+                    pos.x() - r, pos.y() - r, 2 * r, 2 * r,
+                    QPen(self.smart_pos_color),
+                    QBrush(self.smart_pos_color)
+                )
+            if self.current_rect or self.current_point:
+                self.drawing_completed.emit()
+            self.start_pos = None
+            event.accept()
+            return
+
         if event.button() == Qt.LeftButton:
             # Emit signal when drawing is completed
             if self.current_rect or self.current_point:
@@ -269,11 +336,12 @@ class CanvasViewer(QGraphicsView):
             h = rect.height() * self.scale_y
 
             return ('bbox', [x, y, w, h])
-        elif self.drawing_mode in ['pos_point', 'neg_point'] and self.current_point:
+        elif self.current_point:
             rect = self.current_point.rect()
             x = (rect.x() + rect.width()/2) * self.scale_x
             y = (rect.y() + rect.height()/2) * self.scale_y
-            return ('point', [x, y])
+            point_tool = self.last_point_tool or self.drawing_mode
+            return ('point', [x, y], point_tool)
 
         return None
 
@@ -282,6 +350,7 @@ class CanvasViewer(QGraphicsView):
         self.current_rect = None
         self.current_point = None
         self.start_pos = None
+        self.last_point_tool = None
 
     def update_crosshair(self):
         """Update crosshair position"""
@@ -328,6 +397,81 @@ class CanvasViewer(QGraphicsView):
         self.mouse_pos = None
 
 
+class EntityTimelineStrip(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.anchor_states = []
+        self.current_idx = -1
+        self.setMinimumHeight(22)
+        self.setMaximumHeight(22)
+
+    def set_anchor_states(self, anchor_states, current_idx):
+        self.anchor_states = list(anchor_states)
+        self.current_idx = int(current_idx) if isinstance(current_idx, int) else -1
+        self.update()
+
+    def clear_strip(self):
+        self.anchor_states = []
+        self.current_idx = -1
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, False)
+
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        painter.fillRect(rect, QColor('#E5E5E5'))
+        painter.setPen(QColor('#9A9A9A'))
+        painter.drawRect(rect)
+
+        total = len(self.anchor_states)
+        if total <= 0:
+            return
+
+        width = max(1, rect.width())
+        height = rect.height()
+        seg = width / total
+
+        for i, state in enumerate(self.anchor_states):
+            left = int(rect.left() + i * seg)
+            right = int(rect.left() + (i + 1) * seg)
+            if right <= left:
+                right = left + 1
+
+            if state.get('is_missing'):
+                color = QColor('#E35D5D')
+            elif state.get('has_annotation'):
+                color = QColor('#79C879')
+            else:
+                color = QColor('#BDBDBD')
+
+            painter.fillRect(left, rect.top(), right - left, height, color)
+
+            if state.get('in_event'):
+                underline_h = 3
+                painter.fillRect(
+                    left,
+                    rect.bottom() - underline_h + 1,
+                    right - left,
+                    underline_h,
+                    QColor('#7A5A00')
+                )
+
+            center_x = int((left + right) / 2)
+            if state.get('is_enter'):
+                painter.fillRect(center_x - 2, rect.top(), 4, height, QColor('#1F2937'))
+            if state.get('is_exit'):
+                painter.fillRect(center_x - 2, rect.top(), 4, height, QColor('#111827'))
+
+        if 0 <= self.current_idx < total:
+            cur_left = int(rect.left() + self.current_idx * seg)
+            cur_right = int(rect.left() + (self.current_idx + 1) * seg)
+            if cur_right <= cur_left:
+                cur_right = cur_left + 1
+            painter.setPen(QPen(QColor('#2563EB'), 2))
+            painter.drawRect(cur_left, rect.top(), cur_right - cur_left, height)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -344,15 +488,16 @@ class MainWindow(QMainWindow):
         self.timeline_buttons = []  # Store timeline buttons for updating colors
         self.active_note_entity = "actor0"
         self.pending_note_dirty = False
-        self.pending_video_caption_dirty = False
+        self.pending_event_dirty = False
+        self.current_event_idx = 0
 
         self.note_save_timer = QTimer(self)
         self.note_save_timer.setSingleShot(True)
         self.note_save_timer.timeout.connect(self.flush_pending_entity_note)
 
-        self.video_caption_save_timer = QTimer(self)
-        self.video_caption_save_timer.setSingleShot(True)
-        self.video_caption_save_timer.timeout.connect(self.flush_pending_video_caption)
+        self.event_save_timer = QTimer(self)
+        self.event_save_timer.setSingleShot(True)
+        self.event_save_timer.timeout.connect(self.flush_pending_event_data)
 
         self.init_ui()
         self.setup_shortcuts()
@@ -376,8 +521,8 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(0, 12)
+        splitter.setStretchFactor(1, 28)
 
         main_layout.addWidget(splitter)
 
@@ -386,6 +531,31 @@ class MainWindow(QMainWindow):
         panel = QWidget()
         layout = QVBoxLayout()
         panel.setLayout(layout)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(5)
+
+        section_style = (
+            "QGroupBox {"
+            "border: 2px solid #8f8f8f;"
+            "border-radius: 6px;"
+            "margin-top: 8px;"
+            "padding-top: 8px;"
+            "background-color: #f6f6f6;"
+            "font-weight: bold;"
+            "font-size: 11px;"
+            "}"
+            "QGroupBox::title {"
+            "subcontrol-origin: margin;"
+            "left: 10px;"
+            "padding: 0 4px;"
+            "}"
+        )
+
+        def fit_width(widget, ignored=True):
+            widget.setMinimumWidth(0)
+            policy = widget.sizePolicy()
+            policy.setHorizontalPolicy(QSizePolicy.Ignored if ignored else QSizePolicy.Expanding)
+            widget.setSizePolicy(policy)
 
         # Title
         title = QLabel("Settings")
@@ -417,18 +587,23 @@ class MainWindow(QMainWindow):
         self.dataset_combo = QComboBox()
         self.dataset_combo.addItem("-- Select Dataset --")
         self.dataset_combo.addItems(list(DATASET_ADAPTERS.keys()))
+        self.dataset_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.dataset_combo.setMinimumContentsLength(8)
         self.dataset_combo.currentTextChanged.connect(self.on_dataset_changed)
         layout.addWidget(self.dataset_combo)
 
         # Video selection
         layout.addWidget(QLabel("Video:"))
         self.video_combo = QComboBox()
+        self.video_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.video_combo.setMinimumContentsLength(10)
         self.video_combo.currentTextChanged.connect(self.on_video_changed)
         layout.addWidget(self.video_combo)
 
         # Video navigation shortcuts hint
-        video_nav_hint = QLabel("Ctrl+A / Ctrl+D: Prev/Next Video")
+        video_nav_hint = QLabel("Ctrl+A / Ctrl+D / T: Prev/Next Video")
         video_nav_hint.setStyleSheet("color: gray; font-size: 10px; font-style: italic;")
+        video_nav_hint.setWordWrap(True)
         layout.addWidget(video_nav_hint)
 
         # Frame interval mode
@@ -436,6 +611,8 @@ class MainWindow(QMainWindow):
         self.frame_interval_combo = QComboBox()
         self.frame_interval_combo.addItems(["30", "24", "18", "12", "6", "5", "3", "2", "1"])
         self.frame_interval_combo.setCurrentText("5")
+        self.frame_interval_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.frame_interval_combo.setMinimumContentsLength(2)
         self.frame_interval_combo.currentTextChanged.connect(self.on_frame_interval_changed)
         layout.addWidget(self.frame_interval_combo)
 
@@ -443,7 +620,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Run Name:"))
         self.run_name_input = QLineEdit("default")
         layout.addWidget(self.run_name_input)
-        layout.addWidget(QLabel("Saves to: annotations/<run_name>/<video>.txt + .instances.json"))
+        save_path_label = QLabel("Saves to: annotations/<run_name>/<video>.txt\n+ .instances.json")
+        save_path_label.setWordWrap(True)
+        layout.addWidget(save_path_label)
 
         # Import/Export buttons
         self.import_btn = QPushButton("Import Existing Annotation")
@@ -484,110 +663,184 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(QLabel(""))  # Small spacing
 
-        caption_label = QLabel("Video Caption (optional):")
-        caption_label.setStyleSheet("font-weight: bold;")
-        layout.addWidget(caption_label)
+        event_box = QGroupBox("Event (JSON)")
+        event_box.setStyleSheet(section_style)
+        event_layout = QVBoxLayout()
+        event_layout.setContentsMargins(8, 10, 8, 8)
+        event_layout.setSpacing(5)
 
-        caption_hint = QLabel("Video-level summary saved in .instances.json")
-        caption_hint.setStyleSheet("color: gray; font-size: 10px; font-style: italic;")
-        layout.addWidget(caption_hint)
+        event_selector_row = QHBoxLayout()
+        event_selector_row.setSpacing(6)
+        event_selector_row.addWidget(QLabel("Event"))
+        self.event_selector_combo = QComboBox()
+        self.event_selector_combo.setMinimumContentsLength(7)
+        self.event_selector_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.event_selector_combo.currentIndexChanged.connect(self.on_event_selection_changed)
+        event_selector_row.addWidget(self.event_selector_combo)
+        self.add_event_btn = QPushButton("+")
+        self.add_event_btn.setMaximumWidth(28)
+        self.add_event_btn.clicked.connect(self.on_add_event)
+        event_selector_row.addWidget(self.add_event_btn)
+        self.remove_event_btn = QPushButton("-")
+        self.remove_event_btn.setMaximumWidth(28)
+        self.remove_event_btn.clicked.connect(self.on_remove_event)
+        event_selector_row.addWidget(self.remove_event_btn)
+        event_layout.addLayout(event_selector_row)
 
-        self.video_caption_input = QTextEdit()
-        self.video_caption_input.setMaximumHeight(80)
-        self.video_caption_input.setPlaceholderText("Enter caption for this video...")
-        self.video_caption_input.textChanged.connect(self.on_video_caption_changed)
-        layout.addWidget(self.video_caption_input)
+        event_hint = QLabel(
+            "Perp/Subj use comma-separated items and must follow checkbox order. "
+            "Example: 'woman, woman, bag' -> subject1, subject2, subject3. "
+            "Same rule for actor."
+        )
+        event_hint.setStyleSheet("color: gray; font-size: 10px; font-style: italic;")
+        event_hint.setWordWrap(True)
+        event_layout.addWidget(event_hint)
 
-        # Entity Notes section
-        notes_label = QLabel("Entity Notes (optional):")
-        notes_label.setStyleSheet("font-weight: bold;")
-        layout.addWidget(notes_label)
+        event_start_row = QHBoxLayout()
+        event_start_row.setSpacing(6)
+        event_start_row.addWidget(QLabel("Start"))
+        self.event_start_spin = QSpinBox()
+        self.event_start_spin.setMinimum(0)
+        self.event_start_spin.setMaximum(0)
+        self.event_start_spin.setFixedWidth(140)
+        self.event_start_spin.valueChanged.connect(self.on_event_data_changed)
+        event_start_row.addWidget(self.event_start_spin)
+        self.event_start_current_btn = QPushButton("Use current")
+        self.event_start_current_btn.setMaximumWidth(128)
+        self.event_start_current_btn.clicked.connect(self.on_set_event_start_current_anchor)
+        event_start_row.addWidget(self.event_start_current_btn)
+        event_start_row.addStretch()
+        event_layout.addLayout(event_start_row)
 
-        notes_hint = QLabel("Add text notes for current entity")
+        event_end_row = QHBoxLayout()
+        event_end_row.setSpacing(6)
+        event_end_row.addWidget(QLabel("End"))
+        self.event_end_spin = QSpinBox()
+        self.event_end_spin.setMinimum(0)
+        self.event_end_spin.setMaximum(0)
+        self.event_end_spin.setFixedWidth(140)
+        self.event_end_spin.valueChanged.connect(self.on_event_data_changed)
+        event_end_row.addWidget(self.event_end_spin)
+        self.event_end_current_btn = QPushButton("Use current")
+        self.event_end_current_btn.setMaximumWidth(128)
+        self.event_end_current_btn.clicked.connect(self.on_set_event_end_current_anchor)
+        event_end_row.addWidget(self.event_end_current_btn)
+        event_end_row.addStretch()
+        event_layout.addLayout(event_end_row)
+
+        self.event_perp_input = QLineEdit()
+        self.event_perp_input.setPlaceholderText("Perp text (comma-separated, checkbox order)")
+        self.event_perp_input.editingFinished.connect(self.on_event_data_changed)
+        self.event_verb_input = QLineEdit()
+        self.event_verb_input.setPlaceholderText("Verb text")
+        self.event_verb_input.editingFinished.connect(self.on_event_data_changed)
+        self.event_subj_input = QLineEdit()
+        self.event_subj_input.setPlaceholderText("Subj text (comma-separated, checkbox order)")
+        self.event_subj_input.editingFinished.connect(self.on_event_data_changed)
+        self.event_loca_input = QLineEdit()
+        self.event_loca_input.setPlaceholderText("Loca text")
+        self.event_loca_input.editingFinished.connect(self.on_event_data_changed)
+
+        for label_text, input_widget in [
+            ('Perp', self.event_perp_input),
+            ('Verb', self.event_verb_input),
+            ('Subj', self.event_subj_input),
+            ('Loca', self.event_loca_input),
+        ]:
+            text_row = QHBoxLayout()
+            text_row.setSpacing(6)
+            label = QLabel(label_text)
+            label.setMinimumWidth(32)
+            text_row.addWidget(label)
+            text_row.addWidget(input_widget)
+            event_layout.addLayout(text_row)
+
+        event_layout.addWidget(QLabel("Perp Checkbox (10)"))
+        self.event_perp_checks = []
+        for start_idx in (0, 5):
+            perp_check_row = QHBoxLayout()
+            perp_check_row.setSpacing(4)
+            for idx in range(start_idx, start_idx + 5):
+                entity_id = f"actor{idx}"
+                check = QCheckBox(entity_id)
+                check.setMinimumWidth(84)
+                check.stateChanged.connect(self.on_event_data_changed)
+                self.event_perp_checks.append((entity_id, check))
+                perp_check_row.addWidget(check)
+            perp_check_row.addStretch()
+            event_layout.addLayout(perp_check_row)
+
+        event_layout.addWidget(QLabel("Subj Checkbox (10)"))
+        self.event_subj_checks = []
+        for start_idx in (0, 5):
+            subj_check_row = QHBoxLayout()
+            subj_check_row.setSpacing(4)
+            for idx in range(start_idx, start_idx + 5):
+                entity_id = f"subject{idx}"
+                check = QCheckBox(entity_id)
+                check.setMinimumWidth(84)
+                check.stateChanged.connect(self.on_event_data_changed)
+                self.event_subj_checks.append((entity_id, check))
+                subj_check_row.addWidget(check)
+            subj_check_row.addStretch()
+            event_layout.addLayout(subj_check_row)
+
+        event_box.setLayout(event_layout)
+        layout.addWidget(event_box)
+
+        notes_box = QGroupBox("Instance Appearance Caption")
+        notes_box.setStyleSheet(section_style)
+        notes_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        notes_box.setMaximumHeight(136)
+        notes_layout = QVBoxLayout()
+        notes_layout.setContentsMargins(8, 8, 8, 6)
+        notes_layout.setSpacing(4)
+        notes_hint = QLabel("Appearance only (clothing/color/accessories). Avoid actions/intent.")
         notes_hint.setStyleSheet("color: gray; font-size: 10px; font-style: italic;")
-        layout.addWidget(notes_hint)
+        notes_hint.setWordWrap(True)
+        notes_layout.addWidget(notes_hint)
 
         self.entity_notes_input = QTextEdit()
         self.entity_notes_input.setMaximumHeight(80)
-        self.entity_notes_input.setPlaceholderText("Enter notes for this entity...")
+        self.entity_notes_input.setPlaceholderText("e.g. A man wearing a black hoodie and mask.")
         self.entity_notes_input.textChanged.connect(self.on_entity_note_changed)
-        layout.addWidget(self.entity_notes_input)
+        notes_layout.addWidget(self.entity_notes_input)
 
-        timeline_meta_label = QLabel("Entity Timeline Metadata (JSON):")
-        timeline_meta_label.setStyleSheet("font-weight: bold;")
-        layout.addWidget(timeline_meta_label)
+        notes_box.setLayout(notes_layout)
+        layout.addWidget(notes_box)
 
-        timeline_meta_hint = QLabel("Use current anchor buttons for frame-interval-safe annotation")
-        timeline_meta_hint.setStyleSheet("color: gray; font-size: 10px; font-style: italic;")
-        layout.addWidget(timeline_meta_hint)
+        for widget in [
+            self.display_width_slider,
+            self.dataset_combo,
+            self.video_combo,
+            self.frame_interval_combo,
+            self.run_name_input,
+            self.import_btn,
+            self.export_btn,
+            self.event_selector_combo,
+            self.event_perp_input,
+            self.event_verb_input,
+            self.event_subj_input,
+            self.event_loca_input,
+        ]:
+            fit_width(widget, ignored=True)
 
-        enter_row = QHBoxLayout()
-        self.enter_enabled_check = QCheckBox("Enter")
-        self.enter_enabled_check.stateChanged.connect(self.on_timeline_controls_changed)
-        enter_row.addWidget(self.enter_enabled_check)
-        self.enter_frame_spin = QSpinBox()
-        self.enter_frame_spin.setMinimum(0)
-        self.enter_frame_spin.setMaximum(0)
-        self.enter_frame_spin.valueChanged.connect(self.on_timeline_controls_changed)
-        enter_row.addWidget(self.enter_frame_spin)
-        self.enter_set_current_btn = QPushButton("Use current")
-        self.enter_set_current_btn.clicked.connect(self.on_set_enter_current_anchor)
-        enter_row.addWidget(self.enter_set_current_btn)
-        layout.addLayout(enter_row)
+        for widget in [self.event_start_spin, self.event_end_spin]:
+            fit_width(widget, ignored=False)
 
-        exit_row = QHBoxLayout()
-        self.exit_enabled_check = QCheckBox("Exit")
-        self.exit_enabled_check.stateChanged.connect(self.on_timeline_controls_changed)
-        exit_row.addWidget(self.exit_enabled_check)
-        self.exit_frame_spin = QSpinBox()
-        self.exit_frame_spin.setMinimum(0)
-        self.exit_frame_spin.setMaximum(0)
-        self.exit_frame_spin.valueChanged.connect(self.on_timeline_controls_changed)
-        exit_row.addWidget(self.exit_frame_spin)
-        self.exit_set_current_btn = QPushButton("Use current")
-        self.exit_set_current_btn.clicked.connect(self.on_set_exit_current_anchor)
-        exit_row.addWidget(self.exit_set_current_btn)
-        layout.addLayout(exit_row)
+        for widget in [self.entity_notes_input]:
+            fit_width(widget, ignored=False)
 
-        layout.addWidget(QLabel("Missing Frames (supports ranges):"))
-        self.missing_frames_input = QLineEdit()
-        self.missing_frames_input.setPlaceholderText("e.g. 180-190, 210, 250-255")
-        self.missing_frames_input.editingFinished.connect(self.on_timeline_controls_changed)
-        layout.addWidget(self.missing_frames_input)
-
-        missing_range_row = QHBoxLayout()
-        self.missing_range_start_spin = QSpinBox()
-        self.missing_range_start_spin.setMinimum(0)
-        self.missing_range_start_spin.setMaximum(0)
-        missing_range_row.addWidget(self.missing_range_start_spin)
-        self.missing_range_end_spin = QSpinBox()
-        self.missing_range_end_spin.setMinimum(0)
-        self.missing_range_end_spin.setMaximum(0)
-        missing_range_row.addWidget(self.missing_range_end_spin)
-        self.add_missing_range_btn = QPushButton("Add range")
-        self.add_missing_range_btn.clicked.connect(self.on_add_missing_range)
-        missing_range_row.addWidget(self.add_missing_range_btn)
-        self.remove_missing_range_btn = QPushButton("Remove range")
-        self.remove_missing_range_btn.clicked.connect(self.on_remove_missing_range)
-        missing_range_row.addWidget(self.remove_missing_range_btn)
-        layout.addLayout(missing_range_row)
-
-        timeline_btn_row = QHBoxLayout()
-        self.toggle_missing_current_btn = QPushButton("Toggle current in missing")
-        self.toggle_missing_current_btn.clicked.connect(self.on_toggle_missing_current_anchor)
-        timeline_btn_row.addWidget(self.toggle_missing_current_btn)
-        self.clear_timeline_btn = QPushButton("Clear timeline")
-        self.clear_timeline_btn.clicked.connect(self.on_clear_entity_timeline)
-        timeline_btn_row.addWidget(self.clear_timeline_btn)
-        layout.addLayout(timeline_btn_row)
-
-        self.timeline_meta_summary_label = QLabel("Enter: -, Exit: -, Missing: 0")
-        self.timeline_meta_summary_label.setStyleSheet("color: #555; font-size: 10px;")
-        layout.addWidget(self.timeline_meta_summary_label)
+        for widget in [video_nav_hint, save_path_label, event_hint, notes_hint]:
+            fit_width(widget, ignored=True)
 
         layout.addStretch()
 
-        return panel
+        scroll = QScrollArea()
+        scroll.setWidget(panel)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        return scroll
 
     def create_main_panel(self):
         """Create right main panel"""
@@ -639,15 +892,36 @@ class MainWindow(QMainWindow):
 
         # Entity panel
         entity_group = QGroupBox("Entity Panel")
+        entity_group.setStyleSheet(
+            "QGroupBox {"
+            "border: 2px solid #8f8f8f;"
+            "border-radius: 6px;"
+            "margin-top: 8px;"
+            "padding-top: 8px;"
+            "background-color: #f6f6f6;"
+            "font-weight: bold;"
+            "}"
+            "QGroupBox::title {"
+            "subcontrol-origin: margin;"
+            "left: 10px;"
+            "padding: 0 4px;"
+            "}"
+        )
         entity_layout = QHBoxLayout()
+        entity_layout.setContentsMargins(12, 6, 12, 6)
+        entity_layout.setSpacing(14)
         entity_group.setLayout(entity_layout)
+        entity_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        entity_group.setMaximumHeight(132)
+        number_spin_width = 140
 
         # Role selection
         role_layout = QVBoxLayout()
+        role_layout.setSpacing(6)
         role_layout.addWidget(QLabel("Role:"))
         self.role_group = QButtonGroup()
         roles = self.config['entity']['roles']
-        role_shortcuts = {'actor': 'Q', 'subject': 'W', 'related': 'E'}
+        role_shortcuts = {'actor': 'Q', 'subject': 'W'}
         self.role_buttons = {}
         for i, role in enumerate(roles):
             shortcut_key = role_shortcuts.get(role, '')
@@ -658,14 +932,17 @@ class MainWindow(QMainWindow):
             if i == 0:
                 rb.setChecked(True)
         self.role_group.buttonClicked.connect(self.on_entity_changed)
-        entity_layout.addLayout(role_layout)
+        role_layout.addStretch()
+        entity_layout.addLayout(role_layout, 1)
 
         # ID selection
         id_layout = QVBoxLayout()
+        id_layout.setSpacing(6)
         id_layout.addWidget(QLabel("ID (0-9):"))
         self.id_spin = QSpinBox()
         self.id_spin.setMinimum(0)
         self.id_spin.setMaximum(self.config['entity']['max_ids_per_role'] - 1)
+        self.id_spin.setFixedWidth(number_spin_width)
         self.id_spin.setValue(0)
         self.id_spin.valueChanged.connect(self.on_entity_changed)
         id_layout.addWidget(self.id_spin)
@@ -678,10 +955,12 @@ class MainWindow(QMainWindow):
         self.entity_label = QLabel("→ actor0")
         self.entity_label.setStyleSheet("font-weight: bold;")
         id_layout.addWidget(self.entity_label)
-        entity_layout.addLayout(id_layout)
+        id_layout.addStretch()
+        entity_layout.addLayout(id_layout, 1)
 
         # Tool selection
         tool_layout = QVBoxLayout()
+        tool_layout.setSpacing(6)
         tool_layout.addWidget(QLabel("Tool:"))
         self.tool_group = QButtonGroup()
         tools = [('bbox', 'BBox', 'Z'), ('pos_point', 'Pos Point', 'X'), ('neg_point', 'Neg Point', 'C')]
@@ -694,7 +973,22 @@ class MainWindow(QMainWindow):
             if i == 0:
                 rb.setChecked(True)
         self.tool_group.buttonClicked.connect(self.on_tool_changed)
-        entity_layout.addLayout(tool_layout)
+        tool_layout.addStretch()
+        entity_layout.addLayout(tool_layout, 1)
+
+        smart_click_layout = QVBoxLayout()
+        smart_click_layout.setSpacing(6)
+        smart_click_layout.addWidget(QLabel("Input Mode:"))
+        self.smart_click_toggle_btn = QPushButton("Classic Z/X/C")
+        self.smart_click_toggle_btn.setCheckable(True)
+        self.smart_click_toggle_btn.setMaximumWidth(160)
+        self.smart_click_toggle_btn.toggled.connect(self.on_smart_click_mode_toggled)
+        smart_click_layout.addWidget(self.smart_click_toggle_btn)
+        self.smart_click_mode_hint = QLabel("Off: Use selected tool + click")
+        self.smart_click_mode_hint.setStyleSheet("color: gray; font-size: 9px;")
+        smart_click_layout.addWidget(self.smart_click_mode_hint)
+        smart_click_layout.addStretch()
+        entity_layout.addLayout(smart_click_layout, 1)
 
         layout.addWidget(entity_group)
 
@@ -704,21 +998,204 @@ class MainWindow(QMainWindow):
         self.canvas_viewer.drawing_completed.connect(self.on_auto_save)
         layout.addWidget(self.canvas_viewer)
 
+        self.entity_timeline_strip = EntityTimelineStrip()
+        layout.addWidget(self.entity_timeline_strip)
+
         # Status label for save feedback
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: green; font-weight: bold;")
         layout.addWidget(self.status_label)
 
-        # Current annotations list
-        layout.addWidget(QLabel("Current Annotations:"))
+        timeline_meta_label = QLabel("Entity Timeline Metadata (JSON):")
+        timeline_meta_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(timeline_meta_label)
+
+        timeline_grid = QGridLayout()
+        timeline_grid.setHorizontalSpacing(8)
+        timeline_grid.setVerticalSpacing(4)
+        timeline_grid.setColumnStretch(0, 1)
+        timeline_grid.setColumnStretch(1, 1)
+        timeline_grid.setColumnStretch(2, 1)
+
+        panel_style = (
+            "QGroupBox {"
+            "border: 2px solid #8f8f8f;"
+            "border-radius: 6px;"
+            "margin-top: 8px;"
+            "padding-top: 8px;"
+            "background-color: #f6f6f6;"
+            "font-weight: bold;"
+            "}"
+            "QGroupBox::title {"
+            "subcontrol-origin: margin;"
+            "left: 10px;"
+            "padding: 0 4px;"
+            "}"
+        )
+
+        enter_exit_box = QGroupBox("Enter / Exit")
+        enter_exit_box.setStyleSheet(panel_style)
+        enter_exit_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        enter_exit_box.setFixedHeight(170)
+        enter_exit_layout = QVBoxLayout()
+        enter_exit_layout.setContentsMargins(10, 10, 10, 8)
+        enter_exit_layout.setSpacing(8)
+
+        enter_row = QHBoxLayout()
+        enter_row.setSpacing(8)
+        self.enter_enabled_check = QCheckBox("Enter")
+        self.enter_enabled_check.setMinimumWidth(72)
+        self.enter_enabled_check.stateChanged.connect(self.on_timeline_controls_changed)
+        enter_row.addWidget(self.enter_enabled_check)
+        self.enter_frame_spin = QSpinBox()
+        self.enter_frame_spin.setMinimum(0)
+        self.enter_frame_spin.setMaximum(0)
+        self.enter_frame_spin.setFixedWidth(number_spin_width)
+        self.enter_frame_spin.valueChanged.connect(self.on_timeline_controls_changed)
+        enter_row.addWidget(self.enter_frame_spin)
+        self.enter_set_current_btn = QPushButton("Use current")
+        self.enter_set_current_btn.setMaximumWidth(128)
+        self.enter_set_current_btn.clicked.connect(self.on_set_enter_current_anchor)
+        enter_row.addWidget(self.enter_set_current_btn)
+        enter_exit_layout.addLayout(enter_row)
+
+        exit_row = QHBoxLayout()
+        exit_row.setSpacing(8)
+        self.exit_enabled_check = QCheckBox("Exit")
+        self.exit_enabled_check.setMinimumWidth(72)
+        self.exit_enabled_check.stateChanged.connect(self.on_timeline_controls_changed)
+        exit_row.addWidget(self.exit_enabled_check)
+        self.exit_frame_spin = QSpinBox()
+        self.exit_frame_spin.setMinimum(0)
+        self.exit_frame_spin.setMaximum(0)
+        self.exit_frame_spin.setFixedWidth(number_spin_width)
+        self.exit_frame_spin.valueChanged.connect(self.on_timeline_controls_changed)
+        exit_row.addWidget(self.exit_frame_spin)
+        self.exit_set_current_btn = QPushButton("Use current")
+        self.exit_set_current_btn.setMaximumWidth(128)
+        self.exit_set_current_btn.clicked.connect(self.on_set_exit_current_anchor)
+        exit_row.addWidget(self.exit_set_current_btn)
+        enter_exit_layout.addLayout(exit_row)
+
+        clear_row = QHBoxLayout()
+        self.clear_timeline_btn = QPushButton("Clear timeline")
+        self.clear_timeline_btn.clicked.connect(self.on_clear_entity_timeline)
+        clear_row.addWidget(self.clear_timeline_btn)
+        enter_exit_layout.addLayout(clear_row)
+
+        enter_exit_box.setLayout(enter_exit_layout)
+        timeline_grid.addWidget(enter_exit_box, 0, 0)
+
+        missing_box = QGroupBox("Missing Frames")
+        missing_box.setStyleSheet(panel_style)
+        missing_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        missing_box.setFixedHeight(170)
+        missing_col = QVBoxLayout()
+        missing_col.setContentsMargins(10, 10, 10, 8)
+        missing_col.setSpacing(8)
+
+        self.toggle_missing_current_btn = QPushButton("Current Missing Toggle")
+        self.toggle_missing_current_btn.clicked.connect(self.on_toggle_missing_current_anchor)
+        missing_col.addWidget(self.toggle_missing_current_btn)
+
+        missing_separator = QFrame()
+        missing_separator.setFrameShape(QFrame.HLine)
+        missing_separator.setFrameShadow(QFrame.Sunken)
+        missing_col.addWidget(missing_separator)
+
+        missing_content_row = QHBoxLayout()
+        missing_content_row.setSpacing(6)
+
+        missing_controls_col = QVBoxLayout()
+        missing_controls_col.setSpacing(8)
+
+        start_row = QHBoxLayout()
+        start_row.setSpacing(8)
+        start_label = QLabel("Start")
+        start_label.setMinimumWidth(42)
+        start_row.addWidget(start_label)
+        self.missing_range_start_spin = QSpinBox()
+        self.missing_range_start_spin.setMinimum(0)
+        self.missing_range_start_spin.setMaximum(0)
+        self.missing_range_start_spin.setFixedWidth(number_spin_width)
+        start_row.addWidget(self.missing_range_start_spin)
+        self.missing_set_start_current_btn = QPushButton("Current start")
+        self.missing_set_start_current_btn.clicked.connect(self.on_set_missing_start_current_anchor)
+        self.missing_set_start_current_btn.setMaximumWidth(128)
+        start_row.addWidget(self.missing_set_start_current_btn)
+        missing_controls_col.addLayout(start_row)
+
+        end_row = QHBoxLayout()
+        end_row.setSpacing(8)
+        end_label = QLabel("End")
+        end_label.setMinimumWidth(42)
+        end_row.addWidget(end_label)
+        self.missing_range_end_spin = QSpinBox()
+        self.missing_range_end_spin.setMinimum(0)
+        self.missing_range_end_spin.setMaximum(0)
+        self.missing_range_end_spin.setFixedWidth(number_spin_width)
+        end_row.addWidget(self.missing_range_end_spin)
+        self.missing_set_end_current_btn = QPushButton("Current end")
+        self.missing_set_end_current_btn.clicked.connect(self.on_set_missing_end_current_anchor)
+        self.missing_set_end_current_btn.setMaximumWidth(128)
+        end_row.addWidget(self.missing_set_end_current_btn)
+        missing_controls_col.addLayout(end_row)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(8)
+        self.add_missing_range_btn = QPushButton("Add range")
+        self.add_missing_range_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.add_missing_range_btn.clicked.connect(self.on_add_missing_range)
+        action_row.addWidget(self.add_missing_range_btn)
+        self.remove_missing_range_btn = QPushButton("Remove range")
+        self.remove_missing_range_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.remove_missing_range_btn.clicked.connect(self.on_remove_missing_range)
+        action_row.addWidget(self.remove_missing_range_btn)
+        missing_controls_col.addLayout(action_row)
+
+        missing_content_row.addLayout(missing_controls_col, 2)
+
+        missing_right_col = QVBoxLayout()
+        missing_right_col.setSpacing(4)
+        missing_right_col.addWidget(QLabel("Annotated Missing Frames"))
+        self.missing_frames_input = QTextEdit()
+        self.missing_frames_input.setReadOnly(True)
+        self.missing_frames_input.setPlaceholderText("-")
+        self.missing_frames_input.setMinimumWidth(220)
+        self.missing_frames_input.setMinimumHeight(84)
+        self.missing_frames_input.setMaximumHeight(84)
+        missing_right_col.addWidget(self.missing_frames_input)
+        missing_content_row.addLayout(missing_right_col, 1)
+
+        missing_col.addLayout(missing_content_row)
+
+        missing_box.setLayout(missing_col)
+        timeline_grid.addWidget(missing_box, 0, 1)
+
+        current_annotations_box = QGroupBox("Current Annotations")
+        current_annotations_box.setStyleSheet(panel_style)
+        current_annotations_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        current_annotations_box.setFixedHeight(170)
+        current_annotations_layout = QVBoxLayout()
+        current_annotations_layout.setContentsMargins(8, 10, 8, 8)
+        current_annotations_layout.setSpacing(4)
+
         self.annotations_list = AnnotationListWidget()
-        self.annotations_list.setMaximumHeight(150)
+        self.annotations_list.setMinimumHeight(104)
+        self.annotations_list.setMaximumHeight(104)
         self.annotations_list.delete_requested.connect(self.on_delete_annotation)
-        layout.addWidget(self.annotations_list)
+        current_annotations_layout.addWidget(self.annotations_list)
 
         self.delete_ann_btn = QPushButton("🗑️ Delete Selected [Del]")
         self.delete_ann_btn.clicked.connect(self.on_delete_annotation)
-        layout.addWidget(self.delete_ann_btn)
+        current_annotations_layout.addWidget(self.delete_ann_btn)
+
+        current_annotations_box.setLayout(current_annotations_layout)
+        timeline_grid.addWidget(current_annotations_box, 0, 2)
+
+        layout.addSpacing(2)
+
+        layout.addLayout(timeline_grid)
 
         return panel
 
@@ -732,6 +1209,7 @@ class MainWindow(QMainWindow):
             ('A', self.on_prev_anchor),
             ('D', self.on_next_anchor),
             ('F', self.on_carry_forward),
+            ('T', self.on_next_video),
             # Video Navigation
             ('Ctrl+A', self.on_prev_video),
             ('Ctrl+D', self.on_next_video),
@@ -743,7 +1221,6 @@ class MainWindow(QMainWindow):
             # Role selection
             ('Q', lambda: self.select_role('actor')),
             ('W', lambda: self.select_role('subject')),
-            ('E', lambda: self.select_role('related')),
             # Tool selection
             ('Z', lambda: self.select_tool('bbox')),
             ('X', lambda: self.select_tool('pos_point')),
@@ -814,7 +1291,7 @@ class MainWindow(QMainWindow):
     def on_dataset_changed(self, dataset):
         """Dataset selection changed"""
         self.flush_pending_entity_note()
-        self.flush_pending_video_caption()
+        self.flush_pending_event_data()
 
         # Clear video combo when dataset changes
         self.video_combo.clear()
@@ -881,7 +1358,7 @@ class MainWindow(QMainWindow):
     def on_video_changed(self, video_display_name):
         """Video selection changed"""
         self.flush_pending_entity_note()
-        self.flush_pending_video_caption()
+        self.flush_pending_event_data()
 
         if not video_display_name or video_display_name.startswith("--"):
             return
@@ -903,7 +1380,8 @@ class MainWindow(QMainWindow):
         if self.ann_state.current_video != video_id:
             self.ann_state.annotations.clear()
             self.ann_state.entity_notes.clear()
-            self.ann_state.video_caption = ""
+            self.ann_state.events_data = []
+            self.current_event_idx = 0
             self.ann_state.entity_timeline.clear()
             self.ann_state.history.clear()
             self.ann_state.history_idx = -1
@@ -958,6 +1436,8 @@ class MainWindow(QMainWindow):
         self.exit_frame_spin.setMaximum(max_frame)
         self.missing_range_start_spin.setMaximum(max_frame)
         self.missing_range_end_spin.setMaximum(max_frame)
+        self.event_start_spin.setMaximum(max_frame)
+        self.event_end_spin.setMaximum(max_frame)
 
         # Generate anchors (FRAME-BASED)
         intervals = self.current_video['intervals']
@@ -1042,7 +1522,9 @@ class MainWindow(QMainWindow):
 
         # Load first frame
         self.jump_to_anchor(0)
-        self.load_video_caption()
+
+        self.load_event_controls()
+        self.load_entity_note()
         self.load_entity_timeline_controls()
 
     def has_entity_annotation(self, frame, entity_id):
@@ -1057,6 +1539,7 @@ class MainWindow(QMainWindow):
     def update_timeline_colors(self):
         """Update timeline button colors based on annotation status"""
         if not self.timeline_buttons or not self.anchors:
+            self.entity_timeline_strip.clear_strip()
             return
 
         current_idx = self.ann_state.current_anchor_idx
@@ -1065,6 +1548,20 @@ class MainWindow(QMainWindow):
         enter_frame = timeline.get('enter_frame')
         exit_frame = timeline.get('exit_frame')
         missing_frames = set(timeline.get('missing_frames', []))
+
+        event_ranges = []
+        for event_data in self.ann_state.get_events_data():
+            if not isinstance(event_data, dict):
+                continue
+            start = event_data.get('segment_start_frame')
+            end = event_data.get('segment_end_frame')
+            if not isinstance(start, int) or not isinstance(end, int):
+                continue
+            if start > end:
+                start, end = end, start
+            event_ranges.append((start, end))
+
+        strip_states = []
 
         for i, (btn, anchor_frame) in enumerate(zip(self.timeline_buttons, self.anchors)):
             has_annotations = self.has_entity_annotation(anchor_frame, current_entity)
@@ -1125,6 +1622,16 @@ class MainWindow(QMainWindow):
             else:
                 # Empty frame: default style
                 btn.setStyleSheet("")
+
+            strip_states.append({
+                'has_annotation': has_annotations,
+                'is_missing': is_missing,
+                'is_enter': anchor_frame == enter_frame,
+                'is_exit': anchor_frame == exit_frame,
+                'in_event': any(start <= anchor_frame <= end for start, end in event_ranges),
+            })
+
+        self.entity_timeline_strip.set_anchor_states(strip_states, current_idx)
 
     def jump_to_anchor(self, idx):
         """Jump to specific anchor"""
@@ -1199,6 +1706,11 @@ class MainWindow(QMainWindow):
         role = self.get_selected_role()
         color = self.config['ui']['colors'].get(role, '#FF0000')
         self.canvas_viewer.set_drawing_mode(tool, color)
+        self.canvas_viewer.set_smart_click_mode(self.smart_click_toggle_btn.isChecked())
+        self.canvas_viewer.set_smart_point_colors(
+            self.config['ui']['colors']['pos_point'],
+            self.config['ui']['colors']['neg_point']
+        )
 
     def update_annotations_list(self):
         """Update current annotations list"""
@@ -1226,6 +1738,53 @@ class MainWindow(QMainWindow):
             item.setData(Qt.UserRole, entity_id)
             self.annotations_list.addItem(item)
 
+    def align_imported_frames_to_current_anchors(self, annotations):
+        if not self.anchors:
+            return annotations, 0
+
+        frames = set()
+        for ann in annotations:
+            if not isinstance(ann, dict):
+                continue
+            frame = ann.get('frame')
+            if isinstance(frame, int) and frame >= 0:
+                frames.add(frame)
+
+        if not frames:
+            return annotations, 0
+
+        anchor_frames = set(self.anchors)
+        raw_overlap = len(frames & anchor_frames)
+        minus_one_frames = set()
+        plus_one_frames = set()
+        for frame in frames:
+            if frame > 0:
+                minus_one_frames.add(frame - 1)
+            plus_one_frames.add(frame + 1)
+
+        minus_one_overlap = len(minus_one_frames & anchor_frames)
+        plus_one_overlap = len(plus_one_frames & anchor_frames)
+
+        shift = 0
+        if raw_overlap == 0:
+            if minus_one_overlap > 0 and minus_one_overlap >= plus_one_overlap:
+                shift = -1
+            elif plus_one_overlap > 0:
+                shift = 1
+
+        if shift == 0:
+            return annotations, 0
+
+        shifted_annotations = []
+        for ann in annotations:
+            shifted = dict(ann)
+            frame = shifted.get('frame')
+            if isinstance(frame, int) and frame >= 0:
+                shifted['frame'] = max(0, frame + shift)
+            shifted_annotations.append(shifted)
+
+        return shifted_annotations, shift
+
     def on_entity_changed(self):
         """Entity selection changed"""
         self.flush_pending_entity_note()
@@ -1244,27 +1803,210 @@ class MainWindow(QMainWindow):
         self.load_entity_timeline_controls()
         self.update_timeline_colors()
 
-    def load_video_caption(self):
-        self.video_caption_save_timer.stop()
-        caption = self.ann_state.get_video_caption()
-        self.video_caption_input.blockSignals(True)
-        self.video_caption_input.setPlainText(caption)
-        self.video_caption_input.blockSignals(False)
-        self.pending_video_caption_dirty = False
+    def _new_empty_event_data(self):
+        event_data: dict[str, int | str | list[str] | None] = {
+            'segment_start_frame': None,
+            'segment_end_frame': None,
+            'perp_text': '',
+            'verb_text': '',
+            'subj_text': '',
+            'loca_text': '',
+            'perp_entity_ids': [],
+            'subj_entity_ids': [],
+        }
+        return event_data
 
-    def on_video_caption_changed(self):
+    def _get_default_event_bounds(self):
+        if self.anchors:
+            return self.anchors[0], self.anchors[-1]
+        return 0, self.current_video_max_frame
+
+    def load_event_controls(self):
+        self.event_save_timer.stop()
+        events = self.ann_state.get_events_data()
+        if not events:
+            default_start, default_end = self._get_default_event_bounds()
+            default_event = self._new_empty_event_data()
+            default_event['segment_start_frame'] = default_start
+            default_event['segment_end_frame'] = default_end
+            events = [default_event]
+
+        if self.current_event_idx < 0:
+            self.current_event_idx = 0
+        if self.current_event_idx >= len(events):
+            self.current_event_idx = len(events) - 1
+
+        self.event_selector_combo.blockSignals(True)
+        self.event_selector_combo.clear()
+        for idx in range(len(events)):
+            self.event_selector_combo.addItem(f"Event {idx + 1}")
+        self.event_selector_combo.setCurrentIndex(self.current_event_idx)
+        self.event_selector_combo.blockSignals(False)
+
+        event_data = events[self.current_event_idx]
+        default_start, default_end = self._get_default_event_bounds()
+
+        self.event_start_spin.blockSignals(True)
+        self.event_end_spin.blockSignals(True)
+        self.event_perp_input.blockSignals(True)
+        self.event_verb_input.blockSignals(True)
+        self.event_subj_input.blockSignals(True)
+        self.event_loca_input.blockSignals(True)
+
+        start_frame = event_data.get('segment_start_frame')
+        end_frame = event_data.get('segment_end_frame')
+        if isinstance(start_frame, int):
+            self.event_start_spin.setValue(max(0, min(start_frame, self.current_video_max_frame)))
+        else:
+            self.event_start_spin.setValue(max(0, min(default_start, self.current_video_max_frame)))
+
+        if isinstance(end_frame, int):
+            self.event_end_spin.setValue(max(0, min(end_frame, self.current_video_max_frame)))
+        else:
+            self.event_end_spin.setValue(max(0, min(default_end, self.current_video_max_frame)))
+
+        self.event_perp_input.setText(str(event_data.get('perp_text', '')))
+        self.event_verb_input.setText(str(event_data.get('verb_text', '')))
+        self.event_subj_input.setText(str(event_data.get('subj_text', '')))
+        self.event_loca_input.setText(str(event_data.get('loca_text', '')))
+
+        perp_values = event_data.get('perp_entity_ids', [])
+        subj_values = event_data.get('subj_entity_ids', [])
+        perp_ids = set(perp_values) if isinstance(perp_values, list) else set()
+        subj_ids = set(subj_values) if isinstance(subj_values, list) else set()
+        for entity_id, check in self.event_perp_checks:
+            check.blockSignals(True)
+            check.setChecked(entity_id in perp_ids)
+            check.blockSignals(False)
+        for entity_id, check in self.event_subj_checks:
+            check.blockSignals(True)
+            check.setChecked(entity_id in subj_ids)
+            check.blockSignals(False)
+
+        self.event_start_spin.blockSignals(False)
+        self.event_end_spin.blockSignals(False)
+        self.event_perp_input.blockSignals(False)
+        self.event_verb_input.blockSignals(False)
+        self.event_subj_input.blockSignals(False)
+        self.event_loca_input.blockSignals(False)
+        self.pending_event_dirty = False
+
+    def on_event_selection_changed(self, idx):
+        if idx < 0:
+            return
+        if self.pending_event_dirty:
+            self.flush_pending_event_data()
+        self.current_event_idx = idx
+        self.load_event_controls()
+
+    def on_add_event(self):
         if not self.current_video:
             return
-        self.pending_video_caption_dirty = True
-        self.video_caption_save_timer.start(400)
+        self.flush_pending_event_data()
+        events = self.ann_state.get_events_data()
+        inherited_loca = ""
+        if 0 <= self.current_event_idx < len(events):
+            inherited_loca = str(events[self.current_event_idx].get('loca_text', '')).strip()
+        new_event = self._new_empty_event_data()
+        if self.anchors:
+            current_frame = self.anchors[self.ann_state.current_anchor_idx]
+            new_event['segment_start_frame'] = current_frame
+            new_event['segment_end_frame'] = current_frame
+        if inherited_loca:
+            new_event['loca_text'] = inherited_loca
+        events.append(new_event)
+        self.ann_state.set_events_data(events)
+        self.current_event_idx = len(events) - 1
+        self.load_event_controls()
+        self.update_timeline_colors()
 
-    def flush_pending_video_caption(self):
-        if not self.pending_video_caption_dirty:
+    def on_remove_event(self):
+        if not self.current_video:
+            return
+        self.flush_pending_event_data()
+        events = self.ann_state.get_events_data()
+        if not events:
+            return
+        inherited_loca = ""
+        if 0 <= self.current_event_idx < len(events):
+            inherited_loca = str(events[self.current_event_idx].get('loca_text', '')).strip()
+        if len(events) == 1:
+            events = [self._new_empty_event_data()]
+            self.current_event_idx = 0
+            default_start, default_end = self._get_default_event_bounds()
+            events[0]['segment_start_frame'] = default_start
+            events[0]['segment_end_frame'] = default_end
+            if inherited_loca:
+                events[0]['loca_text'] = inherited_loca
+        else:
+            del events[self.current_event_idx]
+            if self.current_event_idx >= len(events):
+                self.current_event_idx = len(events) - 1
+            if 0 <= self.current_event_idx < len(events):
+                current_loca = str(events[self.current_event_idx].get('loca_text', '')).strip()
+                if not current_loca and inherited_loca:
+                    events[self.current_event_idx]['loca_text'] = inherited_loca
+        self.ann_state.set_events_data(events)
+        self.load_event_controls()
+        self.update_timeline_colors()
+
+    def collect_event_data_from_controls(self):
+        start_frame = max(0, min(self.event_start_spin.value(), self.current_video_max_frame))
+        end_frame = max(0, min(self.event_end_spin.value(), self.current_video_max_frame))
+        if start_frame > end_frame:
+            start_frame, end_frame = end_frame, start_frame
+
+        perp_entity_ids = [entity_id for entity_id, check in self.event_perp_checks if check.isChecked()]
+        subj_entity_ids = [entity_id for entity_id, check in self.event_subj_checks if check.isChecked()]
+
+        return {
+            'segment_start_frame': start_frame,
+            'segment_end_frame': end_frame,
+            'perp_text': self.event_perp_input.text().strip(),
+            'verb_text': self.event_verb_input.text().strip(),
+            'subj_text': self.event_subj_input.text().strip(),
+            'loca_text': self.event_loca_input.text().strip(),
+            'perp_entity_ids': perp_entity_ids,
+            'subj_entity_ids': subj_entity_ids,
+        }
+
+    def on_event_data_changed(self):
+        if not self.current_video:
+            return
+        self.pending_event_dirty = True
+        self.event_save_timer.start(200)
+
+    def flush_pending_event_data(self):
+        if not self.pending_event_dirty:
             return
 
-        caption = self.video_caption_input.toPlainText()
-        self.ann_state.set_video_caption(caption)
-        self.pending_video_caption_dirty = False
+        events = self.ann_state.get_events_data()
+        if not events:
+            events = [self._new_empty_event_data()]
+        if self.current_event_idx < 0:
+            self.current_event_idx = 0
+        while len(events) <= self.current_event_idx:
+            events.append(self._new_empty_event_data())
+
+        event_data = self.collect_event_data_from_controls()
+        events[self.current_event_idx] = event_data
+        self.ann_state.set_events_data(events)
+        self.pending_event_dirty = False
+        self.update_timeline_colors()
+
+    def on_set_event_start_current_anchor(self):
+        if not self.anchors:
+            return
+        current_frame = self.anchors[self.ann_state.current_anchor_idx]
+        self.event_start_spin.setValue(current_frame)
+        self.on_event_data_changed()
+
+    def on_set_event_end_current_anchor(self):
+        if not self.anchors:
+            return
+        current_frame = self.anchors[self.ann_state.current_anchor_idx]
+        self.event_end_spin.setValue(current_frame)
+        self.on_event_data_changed()
 
     def load_entity_note(self):
         """Load note for current entity"""
@@ -1331,7 +2073,41 @@ class MainWindow(QMainWindow):
         return sorted(missing_frames)
 
     def format_missing_frames_text(self, frames):
-        return ', '.join(str(frame) for frame in sorted(frames))
+        values = []
+        for value in frames or []:
+            try:
+                frame = int(value)
+            except Exception:
+                continue
+            if frame >= 0:
+                values.append(frame)
+
+        normalized = sorted(set(values))
+        if not normalized:
+            return ""
+
+        chunks = []
+        start = normalized[0]
+        end = normalized[0]
+
+        for frame in normalized[1:]:
+            if frame == end + 1:
+                end = frame
+                continue
+
+            if start == end:
+                chunks.append(str(start))
+            else:
+                chunks.append(f"{start}-{end}")
+            start = frame
+            end = frame
+
+        if start == end:
+            chunks.append(str(start))
+        else:
+            chunks.append(f"{start}-{end}")
+
+        return ', '.join(chunks)
 
     def load_entity_timeline_controls(self):
         entity = self.get_selected_entity()
@@ -1355,7 +2131,7 @@ class MainWindow(QMainWindow):
         if exit_frame is not None:
             self.exit_frame_spin.setValue(max(0, min(exit_frame, self.current_video_max_frame)))
 
-        self.missing_frames_input.setText(self.format_missing_frames_text(missing_frames))
+        self.missing_frames_input.setPlainText(self.format_missing_frames_text(missing_frames))
 
         self.enter_enabled_check.blockSignals(False)
         self.enter_frame_spin.blockSignals(False)
@@ -1366,16 +2142,7 @@ class MainWindow(QMainWindow):
         self.update_timeline_meta_summary()
 
     def update_timeline_meta_summary(self):
-        entity = self.get_selected_entity()
-        timeline = self.ann_state.get_entity_timeline(entity)
-
-        enter_text = '-' if timeline.get('enter_frame') is None else f"F{timeline['enter_frame']}"
-        exit_text = '-' if timeline.get('exit_frame') is None else f"F{timeline['exit_frame']}"
-        missing_count = len(timeline.get('missing_frames', []))
-
-        self.timeline_meta_summary_label.setText(
-            f"Enter: {enter_text}, Exit: {exit_text}, Missing: {missing_count}"
-        )
+        return
 
     def on_timeline_controls_changed(self):
         if not self.current_video:
@@ -1384,7 +2151,7 @@ class MainWindow(QMainWindow):
         entity = self.get_selected_entity()
         enter_frame = self.enter_frame_spin.value() if self.enter_enabled_check.isChecked() else None
         exit_frame = self.exit_frame_spin.value() if self.exit_enabled_check.isChecked() else None
-        missing_frames = self.parse_missing_frames_text(self.missing_frames_input.text())
+        missing_frames = self.parse_missing_frames_text(self.missing_frames_input.toPlainText())
 
         if enter_frame is not None:
             enter_frame = max(0, min(enter_frame, self.current_video_max_frame))
@@ -1413,6 +2180,18 @@ class MainWindow(QMainWindow):
         self.exit_enabled_check.setChecked(True)
         self.exit_frame_spin.setValue(current_frame)
         self.on_timeline_controls_changed()
+
+    def on_set_missing_start_current_anchor(self):
+        if not self.anchors:
+            return
+        current_frame = self.anchors[self.ann_state.current_anchor_idx]
+        self.missing_range_start_spin.setValue(current_frame)
+
+    def on_set_missing_end_current_anchor(self):
+        if not self.anchors:
+            return
+        current_frame = self.anchors[self.ann_state.current_anchor_idx]
+        self.missing_range_end_spin.setValue(current_frame)
 
     def on_toggle_missing_current_anchor(self):
         if not self.anchors or not self.current_video:
@@ -1488,6 +2267,23 @@ class MainWindow(QMainWindow):
         color = self.config['ui']['colors'].get(role, '#FF0000')
         self.canvas_viewer.set_drawing_mode(tool, color)
 
+    def on_smart_click_mode_toggled(self, enabled):
+        self.canvas_viewer.set_smart_click_mode(enabled)
+        self.canvas_viewer.set_smart_point_colors(
+            self.config['ui']['colors']['pos_point'],
+            self.config['ui']['colors']['neg_point']
+        )
+        if enabled:
+            self.smart_click_toggle_btn.setText("Smart Click")
+            self.smart_click_toggle_btn.setStyleSheet(
+                "QPushButton { background-color: #1F7A1F; color: white; font-weight: bold; }"
+            )
+            self.smart_click_mode_hint.setText("On: drag L=bbox, click L=pos, click R=neg")
+        else:
+            self.smart_click_toggle_btn.setText("Classic Z/X/C")
+            self.smart_click_toggle_btn.setStyleSheet("")
+            self.smart_click_mode_hint.setText("Off: Use selected tool + click")
+
     def on_prev_anchor(self):
         """Go to previous anchor"""
         idx = self.ann_state.current_anchor_idx
@@ -1517,9 +2313,9 @@ class MainWindow(QMainWindow):
     def on_undo(self):
         """Undo last action"""
         self.flush_pending_entity_note()
-        self.flush_pending_video_caption()
+        self.flush_pending_event_data()
         if self.ann_state.undo():
-            self.load_video_caption()
+            self.load_event_controls()
             self.refresh_canvas()
             self.update_annotations_list()
             self.update_timeline_colors()
@@ -1529,9 +2325,9 @@ class MainWindow(QMainWindow):
     def on_redo(self):
         """Redo last undone action"""
         self.flush_pending_entity_note()
-        self.flush_pending_video_caption()
+        self.flush_pending_event_data()
         if self.ann_state.redo():
-            self.load_video_caption()
+            self.load_event_controls()
             self.refresh_canvas()
             self.update_annotations_list()
             self.update_timeline_colors()
@@ -1567,10 +2363,13 @@ class MainWindow(QMainWindow):
             self.canvas_viewer.clear_drawing_state()
             return
 
-        obj_type, coords = obj_data
+        obj_type = obj_data[0]
+        coords = obj_data[1]
         anchor_frame = self.anchors[self.ann_state.current_anchor_idx]
         entity = self.get_selected_entity()
         tool = self.get_selected_tool()
+        if obj_type == 'point' and len(obj_data) >= 3:
+            tool = obj_data[2]
 
         if obj_type == 'bbox':
             self.ann_state.add_bbox(anchor_frame, entity, coords)
@@ -1612,8 +2411,13 @@ class MainWindow(QMainWindow):
     def on_import(self):
         """Import existing annotations"""
         self.flush_pending_entity_note()
-        self.flush_pending_video_caption()
-        run_name = self.run_name_input.text()
+        self.flush_pending_event_data()
+        run_name = self.run_name_input.text().strip()
+        self.run_name_input.setText(run_name)
+
+        if not run_name:
+            QMessageBox.warning(self, "Warning", "Please enter a run name")
+            return
 
         if not self.current_video:
             QMessageBox.warning(self, "Warning", "Please select a video first")
@@ -1630,7 +2434,7 @@ class MainWindow(QMainWindow):
         )
 
         if not os.path.exists(import_path):
-            QMessageBox.warning(self, "Warning", "No existing annotation found")
+            QMessageBox.warning(self, "Warning", f"No existing annotation found:\n{import_path}")
             return
 
         try:
@@ -1639,6 +2443,7 @@ class MainWindow(QMainWindow):
                 self.ann_state.video_width,
                 self.ann_state.video_height
             )
+            imported, applied_frame_shift = self.align_imported_frames_to_current_anchors(imported)
             self.ann_state.import_from_list(imported)
 
             metadata_path = get_instance_metadata_path(import_path)
@@ -1646,17 +2451,11 @@ class MainWindow(QMainWindow):
             if os.path.exists(metadata_path):
                 try:
                     metadata_data = import_instance_metadata(metadata_path)
-                    imported_caption_value = metadata_data.get('video_caption', "")
-                    if isinstance(imported_caption_value, str):
-                        imported_caption = imported_caption_value
-                    elif imported_caption_value:
-                        imported_caption = str(imported_caption_value)
-                    else:
-                        imported_caption = ""
+
                     self.ann_state.import_instance_metadata(
                         metadata_data.get('entity_notes', {}),
                         metadata_data.get('entity_timeline', {}),
-                        imported_caption
+                        metadata_data.get('events_data', []),
                     )
                     metadata_loaded = True
                 except Exception as metadata_error:
@@ -1666,11 +2465,22 @@ class MainWindow(QMainWindow):
                         f"Main annotations were imported, but metadata import failed: {metadata_error}"
                     )
 
-            self.show_status(f"Imported {len(imported)} annotations ✓", 3000)
+            if applied_frame_shift == -1:
+                self.show_status(
+                    f"Imported {len(imported)} annotations ✓ (legacy frame index: shifted -1)",
+                    4000
+                )
+            elif applied_frame_shift == 1:
+                self.show_status(
+                    f"Imported {len(imported)} annotations ✓ (legacy frame index: shifted +1)",
+                    4000
+                )
+            else:
+                self.show_status(f"Imported {len(imported)} annotations ✓", 3000)
             self.refresh_canvas()
             self.update_annotations_list()
             self.update_timeline_colors()
-            self.load_video_caption()
+            self.load_event_controls()
             self.load_entity_note()
             self.load_entity_timeline_controls()
 
@@ -1685,7 +2495,7 @@ class MainWindow(QMainWindow):
     def on_export(self):
         """Export current video annotations"""
         self.flush_pending_entity_note()
-        self.flush_pending_video_caption()
+        self.flush_pending_event_data()
 
         if not self.current_video:
             QMessageBox.warning(self, "Warning", "Please select a video first")
@@ -1694,9 +2504,9 @@ class MainWindow(QMainWindow):
         annotations = self.ann_state.export_to_list(include_text=False)
         metadata_state = self.ann_state.export_instance_metadata()
         has_metadata = bool(
-            metadata_state.get('video_caption')
-            or metadata_state.get('entity_notes')
+            metadata_state.get('entity_notes')
             or metadata_state.get('entity_timeline')
+            or metadata_state.get('events_data')
         )
 
         if not annotations and not has_metadata:
@@ -1712,7 +2522,8 @@ class MainWindow(QMainWindow):
             return
 
         # Export
-        run_name = self.run_name_input.text()
+        run_name = self.run_name_input.text().strip()
+        self.run_name_input.setText(run_name)
         video_name = self.current_video['name']
         interval_idx = self.current_video.get('interval_idx')
 
@@ -1732,18 +2543,7 @@ class MainWindow(QMainWindow):
             )
 
             metadata_path = get_instance_metadata_path(output_path)
-            export_caption_value = metadata_state.get('video_caption', "")
-            if isinstance(export_caption_value, str):
-                export_caption = export_caption_value
-            elif export_caption_value:
-                export_caption = str(export_caption_value)
-            else:
-                export_caption = ""
-            metadata_payload = build_instance_metadata_payload(
-                metadata_state.get('entity_notes', {}),
-                metadata_state.get('entity_timeline', {}),
-                export_caption
-            )
+            metadata_payload = build_instance_metadata_payload(metadata_state)
             export_instance_metadata(metadata_payload, metadata_path)
 
             # Generate stats
@@ -1790,7 +2590,7 @@ class MainWindow(QMainWindow):
         """Handle keyboard shortcuts"""
         # Ignore shortcuts when typing in input fields
         focused_widget = QApplication.focusWidget()
-        if isinstance(focused_widget, (QLineEdit, QSpinBox)):
+        if isinstance(focused_widget, (QLineEdit, QSpinBox, QTextEdit)):
             super().keyPressEvent(event)
             return
 
@@ -1803,6 +2603,9 @@ class MainWindow(QMainWindow):
             event.accept()
         elif key == Qt.Key_D and modifiers == Qt.NoModifier:
             self.on_next_anchor()
+            event.accept()
+        elif key == Qt.Key_T and modifiers == Qt.NoModifier:
+            self.on_next_video()
             event.accept()
         elif key == Qt.Key_F and modifiers == Qt.NoModifier:
             self.on_carry_forward()
@@ -1831,9 +2634,6 @@ class MainWindow(QMainWindow):
             event.accept()
         elif key == Qt.Key_W and modifiers == Qt.NoModifier:
             self.select_role('subject')
-            event.accept()
-        elif key == Qt.Key_E and modifiers == Qt.NoModifier:
-            self.select_role('related')
             event.accept()
         # Tool selection
         elif key == Qt.Key_Z and modifiers == Qt.NoModifier:
@@ -1882,7 +2682,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """Clean up on close"""
         self.flush_pending_entity_note()
-        self.flush_pending_video_caption()
+        self.flush_pending_event_data()
         if self.video_loader:
             self.video_loader.release()
         event.accept()

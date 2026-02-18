@@ -2,10 +2,14 @@
 code_map.md
 plan.md
 TRACKING_AND_SAM2_METADATA_CONTRACT.md
+anomaly_caption_annotation.md
 .agent/
 
-# Python
+# Annotations output
+annotations/
+logs/
 
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -16,9 +20,7 @@ venv/
 ENV/
 .venv
 
-# Annotations output
-annotations/
-logs/
+
 
 # Cache
 cache/

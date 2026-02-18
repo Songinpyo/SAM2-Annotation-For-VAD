@@ -37,7 +37,7 @@ eis:
   max_K: 3000
 
 entity:
-  roles: ["actor", "subject", "related"]
+  roles: ["actor", "subject"]
   max_ids_per_role: 10
 
 ui:

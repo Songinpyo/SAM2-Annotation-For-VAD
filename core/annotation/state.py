@@ -9,13 +9,13 @@ class AnnotationState:
         self.video_width = 1920
         self.video_height = 1080
 
+        self.events_data = []
+
         # annotations: {frame: {entity_id: {bbox, pos_points, neg_points}}}
         self.annotations = {}
 
         # entity notes: {entity_id: "text note"}
         self.entity_notes = {}
-
-        self.video_caption = ""
 
         self.entity_timeline = {}
 
@@ -46,16 +46,110 @@ class AnnotationState:
     def _build_snapshot(self):
         return {
             'annotations': copy.deepcopy(self.annotations),
+            'events_data': copy.deepcopy(self.events_data),
             'entity_notes': copy.deepcopy(self.entity_notes),
-            'video_caption': self.video_caption,
-            'entity_timeline': copy.deepcopy(self.entity_timeline)
+            'entity_timeline': copy.deepcopy(self.entity_timeline),
         }
 
     def _restore_snapshot(self, snapshot):
         self.annotations = copy.deepcopy(snapshot.get('annotations', {}))
+        self.events_data = self._normalize_events_data(snapshot.get('events_data', []))
         self.entity_notes = copy.deepcopy(snapshot.get('entity_notes', {}))
-        self.video_caption = str(snapshot.get('video_caption', ""))
         self.entity_timeline = copy.deepcopy(snapshot.get('entity_timeline', {}))
+
+    def _empty_event_data(self):
+        return {
+            'segment_start_frame': None,
+            'segment_end_frame': None,
+            'perp_text': "",
+            'verb_text': "",
+            'subj_text': "",
+            'loca_text': "",
+            'perp_entity_ids': [],
+            'subj_entity_ids': [],
+        }
+
+    def _normalize_entity_ids(self, values):
+        ids = []
+        if isinstance(values, list):
+            for value in values:
+                if isinstance(value, str):
+                    entity_id = value.strip()
+                    if entity_id:
+                        ids.append(entity_id)
+        return sorted(set(ids))
+
+    def _normalize_event_data(self, event_data):
+        start_frame = None
+        end_frame = None
+        perp_text = ""
+        verb_text = ""
+        subj_text = ""
+        loca_text = ""
+        perp_entity_ids = []
+        subj_entity_ids = []
+
+        if isinstance(event_data, dict):
+            start_frame = event_data.get('segment_start_frame')
+            end_frame = event_data.get('segment_end_frame')
+
+            if start_frame is not None:
+                start_frame = int(start_frame)
+            if end_frame is not None:
+                end_frame = int(end_frame)
+            if start_frame is not None and end_frame is not None and start_frame > end_frame:
+                start_frame, end_frame = end_frame, start_frame
+
+            for key in ['perp_text', 'verb_text', 'subj_text', 'loca_text']:
+                value = event_data.get(key, "")
+                if value and str(value).strip():
+                    if key == 'perp_text':
+                        perp_text = str(value).strip()
+                    elif key == 'verb_text':
+                        verb_text = str(value).strip()
+                    elif key == 'subj_text':
+                        subj_text = str(value).strip()
+                    elif key == 'loca_text':
+                        loca_text = str(value).strip()
+
+            perp_entity_ids = self._normalize_entity_ids(event_data.get('perp_entity_ids', []))
+            subj_entity_ids = self._normalize_entity_ids(event_data.get('subj_entity_ids', []))
+
+        return {
+            'segment_start_frame': start_frame,
+            'segment_end_frame': end_frame,
+            'perp_text': perp_text,
+            'verb_text': verb_text,
+            'subj_text': subj_text,
+            'loca_text': loca_text,
+            'perp_entity_ids': perp_entity_ids,
+            'subj_entity_ids': subj_entity_ids,
+        }
+
+    def _normalize_events_data(self, events_data):
+        if isinstance(events_data, dict):
+            return [self._normalize_event_data(events_data)]
+
+        result = []
+        if isinstance(events_data, list):
+            for event_data in events_data:
+                if isinstance(event_data, dict):
+                    result.append(self._normalize_event_data(event_data))
+        return result
+
+    def _is_event_empty(self, event_data):
+        if not isinstance(event_data, dict):
+            return True
+        return (
+            event_data.get('segment_start_frame') is None
+            and event_data.get('segment_end_frame') is None
+            and not str(event_data.get('perp_text', '')).strip()
+            and not str(event_data.get('verb_text', '')).strip()
+            and not str(event_data.get('subj_text', '')).strip()
+            and not str(event_data.get('loca_text', '')).strip()
+            and not event_data.get('perp_entity_ids')
+            and not event_data.get('subj_entity_ids')
+        )
 
     def _empty_timeline_data(self):
         return {
@@ -177,8 +271,8 @@ class AnnotationState:
         """Load annotations from import"""
         self.annotations = {}
         self.entity_notes = {}
-        self.video_caption = ""
         self.entity_timeline = {}
+        self.events_data = []
 
         for ann in annotations:
             frame = ann['frame']
@@ -272,15 +366,26 @@ class AnnotationState:
         """Get text note for an entity"""
         return self.entity_notes.get(entity_id, "")
 
-    def set_video_caption(self, caption):
-        caption_text = ""
-        if caption and str(caption).strip():
-            caption_text = str(caption).strip()
-        self.video_caption = caption_text
+    def set_event_data(self, event_data, index=0):
+        events = self._normalize_events_data(self.events_data)
+        while len(events) <= index:
+            events.append(self._normalize_event_data({}))
+        events[index] = self._normalize_event_data(event_data)
+        self.events_data = events
         self.save_history()
 
-    def get_video_caption(self):
-        return self.video_caption
+    def get_event_data(self, index=0):
+        events = self._normalize_events_data(self.events_data)
+        if 0 <= index < len(events):
+            return copy.deepcopy(events[index])
+        return self._empty_event_data()
+
+    def set_events_data(self, events_data):
+        self.events_data = self._normalize_events_data(events_data)
+        self.save_history()
+
+    def get_events_data(self):
+        return copy.deepcopy(self._normalize_events_data(self.events_data))
 
     def set_entity_timeline(
         self,
@@ -311,11 +416,15 @@ class AnnotationState:
         timeline['missing_frames'] = self._normalize_missing_frames(timeline.get('missing_frames', []))
         return timeline
 
-    def import_instance_metadata(self, entity_notes, entity_timeline, video_caption=""):
-        caption_text = ""
-        if video_caption and str(video_caption).strip():
-            caption_text = str(video_caption).strip()
-        self.video_caption = caption_text
+    def import_instance_metadata(
+        self,
+        entity_notes,
+        entity_timeline,
+        events_data=None,
+    ):
+        self.entity_notes = {}
+        self.entity_timeline = {}
+        self.events_data = self._normalize_events_data(events_data or [])
 
         for entity_id, note in (entity_notes or {}).items():
             if note and str(note).strip():
@@ -365,7 +474,12 @@ class AnnotationState:
             }
 
         return {
-            'video_caption': self.video_caption,
+            'events_data': [
+                event
+                for event in self._normalize_events_data(self.events_data)
+                if not self._is_event_empty(event)
+            ],
+            'all_entity_ids': self.get_all_entity_ids(),
             'entity_notes': notes,
             'entity_timeline': timeline_map,
         }
@@ -374,4 +488,11 @@ class AnnotationState:
         entities = set(self.get_active_entities())
         entities.update(self.entity_notes.keys())
         entities.update(self.entity_timeline.keys())
+        for event_data in self._normalize_events_data(self.events_data):
+            perp_ids = event_data.get('perp_entity_ids', [])
+            if isinstance(perp_ids, list):
+                entities.update(perp_ids)
+            subj_ids = event_data.get('subj_entity_ids', [])
+            if isinstance(subj_ids, list):
+                entities.update(subj_ids)
         return sorted(entities)
