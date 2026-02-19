@@ -2158,9 +2158,6 @@ class MainWindow(QMainWindow):
         if exit_frame is not None:
             exit_frame = max(0, min(exit_frame, self.current_video_max_frame))
 
-        if enter_frame is not None and exit_frame is not None and enter_frame > exit_frame:
-            enter_frame, exit_frame = exit_frame, enter_frame
-
         self.ann_state.set_entity_timeline(entity, enter_frame, exit_frame, missing_frames)
         self.load_entity_timeline_controls()
         self.update_timeline_colors()
@@ -2169,16 +2166,24 @@ class MainWindow(QMainWindow):
         if not self.anchors:
             return
         current_frame = self.anchors[self.ann_state.current_anchor_idx]
+        self.enter_enabled_check.blockSignals(True)
+        self.enter_frame_spin.blockSignals(True)
         self.enter_enabled_check.setChecked(True)
         self.enter_frame_spin.setValue(current_frame)
+        self.enter_enabled_check.blockSignals(False)
+        self.enter_frame_spin.blockSignals(False)
         self.on_timeline_controls_changed()
 
     def on_set_exit_current_anchor(self):
         if not self.anchors:
             return
         current_frame = self.anchors[self.ann_state.current_anchor_idx]
+        self.exit_enabled_check.blockSignals(True)
+        self.exit_frame_spin.blockSignals(True)
         self.exit_enabled_check.setChecked(True)
         self.exit_frame_spin.setValue(current_frame)
+        self.exit_enabled_check.blockSignals(False)
+        self.exit_frame_spin.blockSignals(False)
         self.on_timeline_controls_changed()
 
     def on_set_missing_start_current_anchor(self):
