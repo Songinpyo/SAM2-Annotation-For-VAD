@@ -709,6 +709,10 @@ class MainWindow(QMainWindow):
         self.event_start_current_btn.setMaximumWidth(128)
         self.event_start_current_btn.clicked.connect(self.on_set_event_start_current_anchor)
         event_start_row.addWidget(self.event_start_current_btn)
+        self.event_start_first_btn = QPushButton("Use first")
+        self.event_start_first_btn.setMaximumWidth(96)
+        self.event_start_first_btn.clicked.connect(self.on_set_event_start_first_anchor)
+        event_start_row.addWidget(self.event_start_first_btn)
         event_start_row.addStretch()
         event_layout.addLayout(event_start_row)
 
@@ -725,6 +729,10 @@ class MainWindow(QMainWindow):
         self.event_end_current_btn.setMaximumWidth(128)
         self.event_end_current_btn.clicked.connect(self.on_set_event_end_current_anchor)
         event_end_row.addWidget(self.event_end_current_btn)
+        self.event_end_last_btn = QPushButton("Use last")
+        self.event_end_last_btn.setMaximumWidth(96)
+        self.event_end_last_btn.clicked.connect(self.on_set_event_end_last_anchor)
+        event_end_row.addWidget(self.event_end_last_btn)
         event_end_row.addStretch()
         event_layout.addLayout(event_end_row)
 
@@ -2003,11 +2011,27 @@ class MainWindow(QMainWindow):
         self.event_start_spin.setValue(current_frame)
         self.on_event_data_changed()
 
+    def on_set_event_start_first_anchor(self):
+        if not self.anchors:
+            self.event_start_spin.setValue(0)
+            self.on_event_data_changed()
+            return
+        self.event_start_spin.setValue(self.anchors[0])
+        self.on_event_data_changed()
+
     def on_set_event_end_current_anchor(self):
         if not self.anchors:
             return
         current_frame = self.anchors[self.ann_state.current_anchor_idx]
         self.event_end_spin.setValue(current_frame)
+        self.on_event_data_changed()
+
+    def on_set_event_end_last_anchor(self):
+        if not self.anchors:
+            self.event_end_spin.setValue(self.current_video_max_frame)
+            self.on_event_data_changed()
+            return
+        self.event_end_spin.setValue(self.anchors[-1])
         self.on_event_data_changed()
 
     def load_entity_note(self):
