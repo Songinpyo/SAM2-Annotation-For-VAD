@@ -1051,6 +1051,7 @@ class MainWindow(QMainWindow):
         self.enter_frame_spin.setMinimum(0)
         self.enter_frame_spin.setMaximum(0)
         self.enter_frame_spin.setFixedWidth(number_spin_width)
+        self.enter_frame_spin.setEnabled(False)
         self.enter_frame_spin.valueChanged.connect(self.on_timeline_controls_changed)
         enter_row.addWidget(self.enter_frame_spin)
         self.enter_set_current_btn = QPushButton("Use current")
@@ -1069,6 +1070,7 @@ class MainWindow(QMainWindow):
         self.exit_frame_spin.setMinimum(0)
         self.exit_frame_spin.setMaximum(0)
         self.exit_frame_spin.setFixedWidth(number_spin_width)
+        self.exit_frame_spin.setEnabled(False)
         self.exit_frame_spin.valueChanged.connect(self.on_timeline_controls_changed)
         exit_row.addWidget(self.exit_frame_spin)
         self.exit_set_current_btn = QPushButton("Use current")
@@ -2109,6 +2111,10 @@ class MainWindow(QMainWindow):
 
         return ', '.join(chunks)
 
+    def update_timeline_spin_enabled_state(self):
+        self.enter_frame_spin.setEnabled(self.enter_enabled_check.isChecked())
+        self.exit_frame_spin.setEnabled(self.exit_enabled_check.isChecked())
+
     def load_entity_timeline_controls(self):
         entity = self.get_selected_entity()
         timeline = self.ann_state.get_entity_timeline(entity)
@@ -2126,10 +2132,18 @@ class MainWindow(QMainWindow):
         self.enter_enabled_check.setChecked(enter_frame is not None)
         self.exit_enabled_check.setChecked(exit_frame is not None)
 
+        default_frame = 0
+        if self.anchors and 0 <= self.ann_state.current_anchor_idx < len(self.anchors):
+            default_frame = self.anchors[self.ann_state.current_anchor_idx]
+
         if enter_frame is not None:
             self.enter_frame_spin.setValue(max(0, min(enter_frame, self.current_video_max_frame)))
+        else:
+            self.enter_frame_spin.setValue(default_frame)
         if exit_frame is not None:
             self.exit_frame_spin.setValue(max(0, min(exit_frame, self.current_video_max_frame)))
+        else:
+            self.exit_frame_spin.setValue(default_frame)
 
         self.missing_frames_input.setPlainText(self.format_missing_frames_text(missing_frames))
 
@@ -2139,6 +2153,8 @@ class MainWindow(QMainWindow):
         self.exit_frame_spin.blockSignals(False)
         self.missing_frames_input.blockSignals(False)
 
+        self.update_timeline_spin_enabled_state()
+
         self.update_timeline_meta_summary()
 
     def update_timeline_meta_summary(self):
@@ -2147,6 +2163,8 @@ class MainWindow(QMainWindow):
     def on_timeline_controls_changed(self):
         if not self.current_video:
             return
+
+        self.update_timeline_spin_enabled_state()
 
         entity = self.get_selected_entity()
         enter_frame = self.enter_frame_spin.value() if self.enter_enabled_check.isChecked() else None
