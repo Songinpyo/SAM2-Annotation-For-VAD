@@ -22,6 +22,7 @@ from core.dataset.ped import PedAdapter
 from core.dataset.dota import DOTAAdapter
 from core.dataset.shanghaitech import ShanghaiTechAdapter
 from core.dataset.avenue import AvenueAdapter
+from core.dataset.msad import MSADAdapter
 from core.eis.anchors import generate_anchors_by_frame
 from core.io.video import VideoLoader
 from core.io.export import export_annotations, validate_annotations, generate_statistics
@@ -43,6 +44,8 @@ DATASET_ADAPTERS = {
     "dota": (DOTAAdapter, "dota", True),
     "shanghaitech": (ShanghaiTechAdapter, "shanghaitech", True),
     "avenue": (AvenueAdapter, "avenue", True),
+    "msad-train": (MSADAdapter, "msad_train", True),
+    "msad-test": (MSADAdapter, "msad_test", True),
 }
 
 
@@ -1419,19 +1422,29 @@ class MainWindow(QMainWindow):
             return
 
         dataset = self.dataset_combo.currentText()
-        video_path = get_video_path(
-            self.config['dataset'][dataset.replace('-', '_')]['videos_dir'],
-            self.current_video['name']
-        )
+        dataset_config = self.config['dataset'][dataset.replace('-', '_')]
+        media_path = self.current_video.get('media_path')
 
-        if not os.path.exists(video_path):
-            QMessageBox.warning(self, "Error", f"Video file not found: {video_path}")
+        if not media_path:
+            media_path = get_video_path(
+                dataset_config['videos_dir'],
+                self.current_video['name']
+            )
+
+        if not os.path.exists(media_path):
+            QMessageBox.warning(self, "Error", f"Media source not found: {media_path}")
             return
 
         # Load video
         if self.video_loader:
             self.video_loader.release()
-        self.video_loader = VideoLoader(video_path)
+
+        try:
+            self.video_loader = VideoLoader(media_path)
+        except ValueError as error:
+            QMessageBox.critical(self, "Invalid Media", str(error))
+            return
+
         info = self.video_loader.get_info()
 
         # Get max frame number (frame_count - 1, since frames are 0-indexed)
@@ -2743,9 +2756,24 @@ class MainWindow(QMainWindow):
         adapter_cls, config_key, requires_videos_dir = adapter_info
         dataset_config = self.config['dataset'][config_key]
 
+        if dataset in ('ped1', 'ped2'):
+            return PedAdapter(
+                dataset_config['annotation_file'],
+                dataset_config['videos_dir'],
+                dataset_config.get('frames_dir')
+            )
+
+        if dataset == 'avenue':
+            return AvenueAdapter(
+                dataset_config['annotation_file'],
+                dataset_config['videos_dir'],
+                dataset_config.get('frames_dir')
+            )
+
         adapter_args = [dataset_config['annotation_file']]
         if requires_videos_dir:
             adapter_args.append(dataset_config['videos_dir'])
+
         return adapter_cls(*adapter_args)
 
 

@@ -36,7 +36,8 @@ cache/
 Thumbs.db
 
 # Data (large files)
-data/*/videos/*.mp4
+data/**/frames/**
+data/**/videos/**
 data/**/*.tif
 data/**/*.bmp
 data/**/*.m

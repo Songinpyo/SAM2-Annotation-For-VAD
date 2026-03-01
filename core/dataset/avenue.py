@@ -1,17 +1,39 @@
 import os
 
-class AvenueAdapter:
-    def __init__(self, annotation_file, videos_dir):
-        """
-        Avenue dataset adapter (frame-based).
 
-        Args:
-            annotation_file: Path to temporal annotation file
-            videos_dir: Directory containing video files
-        """
+class AvenueAdapter:
+    def __init__(self, annotation_file, videos_dir, frames_dir=None):
         self.annotation_file = annotation_file
         self.videos_dir = videos_dir
+        self.frames_dir = frames_dir
+        self.missing_videos = []
+        self.unannotated_videos = []
         self.videos = self._parse_annotations()
+
+    def _build_video_candidates(self, video_num):
+        candidates = [f"{video_num}_video.mp4", f"{video_num}.mp4"]
+        try:
+            padded = f"{int(video_num):02d}"
+        except ValueError:
+            return candidates
+
+        for candidate in (f"{padded}_video.mp4", f"{padded}.mp4"):
+            if candidate not in candidates:
+                candidates.append(candidate)
+
+        return candidates
+
+    def _build_frame_dir_candidates(self, video_num):
+        candidates = [video_num]
+        try:
+            padded = f"{int(video_num):02d}"
+        except ValueError:
+            return candidates
+
+        if padded not in candidates:
+            candidates.append(padded)
+
+        return candidates
 
     def _parse_annotations(self):
         """Parse Avenue annotation file (frame-based)"""
@@ -53,23 +75,57 @@ class AvenueAdapter:
         else:
             actual_videos = set()
 
+        frames_dir = self.frames_dir
+        if frames_dir and os.path.exists(frames_dir):
+            all_entries = set(os.listdir(frames_dir))
+            actual_frame_dirs = {
+                name
+                for name in all_entries
+                if os.path.isdir(os.path.join(frames_dir, name))
+            }
+        else:
+            actual_frame_dirs = set()
+
         matched_videos = set()
+        matched_frame_dirs = set()
 
         for video_num, intervals in video_intervals.items():
-            # Try patterns: "{num}_video.mp4" (old) and "{num}.mp4" (current)
-            candidates = [f"{video_num}_video.mp4", f"{video_num}.mp4"]
-            
+            video_candidates = self._build_video_candidates(video_num)
+            frame_candidates = self._build_frame_dir_candidates(video_num)
+
+            media_type = None
             found_name = None
-            for name in candidates:
-                if os.path.exists(os.path.join(self.videos_dir, name)):
-                    found_name = name
+            media_path = None
+
+            for dir_name in frame_candidates:
+                if frames_dir is not None and dir_name in actual_frame_dirs:
+                    media_type = 'frames'
+                    found_name = dir_name
+                    media_path = os.path.join(frames_dir, dir_name)
                     break
-            
-            if not found_name:
+
+            if media_type is None:
+                for file_name in video_candidates:
+                    if file_name in actual_videos:
+                        media_type = 'video'
+                        found_name = file_name
+                        media_path = os.path.join(self.videos_dir, file_name)
+                        break
+
+            if media_type is None or found_name is None or media_path is None:
                 self.missing_videos.append(video_num)
                 continue
 
-            matched_videos.add(found_name)
+            if media_type == 'frames':
+                matched_frame_dirs.add(found_name)
+                for candidate in video_candidates:
+                    if candidate in actual_videos:
+                        matched_videos.add(candidate)
+            else:
+                matched_videos.add(found_name)
+                for candidate in frame_candidates:
+                    if candidate in actual_frame_dirs:
+                        matched_frame_dirs.add(candidate)
 
             # Create separate entry for each interval
             for idx, interval in enumerate(intervals):
@@ -77,15 +133,17 @@ class AvenueAdapter:
                 display_name = f"{video_num} - Interval {idx + 1} [Frame {start_frame}-{end_frame}]"
 
                 videos.append({
-                    'name': found_name,  # Actual filename
+                    'name': found_name,
                     'display_name': display_name,
                     'annotation_name': video_num,  # Original annotation name
                     'interval_idx': idx,
-                    'intervals': [interval]  # Single interval: (start_frame, end_frame)
+                    'intervals': [interval],  # Single interval: (start_frame, end_frame)
+                    'media_type': media_type,
+                    'media_path': media_path,
                 })
-        
+
         # Identify unannotated videos (files on disk but not in annotation)
-        self.unannotated_videos = list(actual_videos - matched_videos)
+        self.unannotated_videos = sorted((actual_videos - matched_videos) | (actual_frame_dirs - matched_frame_dirs))
 
         return videos
 

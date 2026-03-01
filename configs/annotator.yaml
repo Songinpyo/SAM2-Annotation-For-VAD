@@ -10,10 +10,12 @@ dataset:
   ped1:
     annotation_file: "data/ped1/annotations.txt"
     videos_dir: "data/ped1/videos"
+    frames_dir: "data/ped1/frames"
 
   ped2:
     annotation_file: "data/ped2/annotations.txt"
     videos_dir: "data/ped2/videos"
+    frames_dir: "data/ped2/frames"
 
   dota:
     annotation_file: "data/dota/annotations.txt"
@@ -30,6 +32,15 @@ dataset:
   avenue:
     annotation_file: "data/avenue/avenue_merge.txt"
     videos_dir: "data/avenue/videos"
+    frames_dir: "data/avenue/frames"
+
+  msad_train:
+    annotation_file: "data/msad/annotations_train.txt"
+    videos_dir: "data/msad/videos"
+
+  msad_test:
+    annotation_file: "data/msad/annotations_test.txt"
+    videos_dir: "data/msad/videos"
 
 eis:
   frame_interval_candidates: [30, 24, 18, 12, 6, 3, 2, 1]
